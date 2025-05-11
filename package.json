@@ -1,0 +1,45 @@
+{
+  "name": "video-conferencing-platform",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "check-models": "node scripts/check-face-models.js",
+    "dev": "npm run check-models && next dev",
+    "build": "npm run check-models && next build",
+    "start": "next start",
+    "lint": "next lint"
+  },
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.1.0",
+    "@tensorflow/tfjs": "^4.22.0",
+    "@tensorflow/tfjs-backend-webgl": "^4.22.0",
+    "classnames": "^2.3.2",
+    "face-api.js": "^0.20.0",
+    "hark": "^1.2.3",
+    "js-cookie": "^3.0.5",
+    "mediasoup-client": "github:versatica/mediasoup-client#v3",
+    "next": "^15.3.2",
+    "protoo-client": "^4.0.6",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-draggable": "^4.4.6",
+    "react-redux": "^9.0.0",
+    "react-tooltip": "^5.25.0",
+    "ua-parser-js": "^1.0.37",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "@types/hark": "^1.2.4",
+    "@types/js-cookie": "^3.0.6",
+    "@types/node": "^20.4.5",
+    "@types/protoo-client": "^4.0.4",
+    "@types/react": "^18.2.18",
+    "@types/react-dom": "^18.2.7",
+    "@types/ua-parser-js": "^0.7.39",
+    "@types/uuid": "^9.0.7",
+    "eslint": "^8.56.0",
+    "eslint-config-next": "14.1.0",
+    "sass": "^1.69.5",
+    "typescript": "^5.3.3"
+  }
+}
