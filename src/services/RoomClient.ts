@@ -12,8 +12,11 @@ import {
   Notification,
   AuthConfig,
 } from "../types";
+import Logger from "@/services/Logger";
 
 export class RoomClient extends EventEmitter {
+  private logger: Logger;
+
   private webrtcService: WebRTCService;
 
   // Core state
@@ -48,6 +51,11 @@ export class RoomClient extends EventEmitter {
   private _shareProducer: Producer | null = null;
   private _chatDataProducer: DataProducer | null = null;
   private _botDataProducer: DataProducer | null = null;
+  // Add codec forcing flags
+  private _forceVP8: boolean = false;
+  private _forceH264: boolean = false;
+  private _forceVP9: boolean = false;
+  private _forceAV1: boolean = false;
 
   // State callbacks
   private _store: any = null;
@@ -67,9 +75,19 @@ export class RoomClient extends EventEmitter {
     sharingScalabilityMode?: string;
     authConfig: AuthConfig;
     store?: any;
+    forceVP8?: boolean;
+    forceH264?: boolean;
+    forceVP9?: boolean;
+    forceAV1?: boolean;
   }) {
     super();
-
+    // Initialize codec preferences
+    this._forceVP8 = config.forceVP8 || false;
+    this._forceH264 = config.forceH264 || false;
+    this._forceVP9 = config.forceVP9 || false;
+    this._forceAV1 = config.forceAV1 || false;
+    // Initialize logger
+    this.logger = new Logger("RoomClient");
     this._roomId = config.roomId;
     this._peerId = config.peerId;
     this._displayName = config.displayName;
@@ -130,14 +148,6 @@ export class RoomClient extends EventEmitter {
 
     this._roomState = "connecting";
 
-    // Dispatch room state change if store is available
-    if (this._store) {
-      this._store.dispatch({
-        type: "SET_ROOM_STATE",
-        payload: "connecting",
-      });
-    }
-
     try {
       // Connect to the room
       await this.webrtcService.connect(
@@ -147,14 +157,6 @@ export class RoomClient extends EventEmitter {
       );
 
       this._roomState = "connected";
-
-      // Dispatch room state change
-      if (this._store) {
-        this._store.dispatch({
-          type: "SET_ROOM_STATE",
-          payload: "connected",
-        });
-      }
 
       // Auto-enable media if produce is enabled
       if (this._produce) {
@@ -172,13 +174,56 @@ export class RoomClient extends EventEmitter {
       // Emit joined event
       this.emit("joined");
     } catch (error) {
-      console.error("join() failed", error);
-      this.close();
+      this.logger.error(
+        "join() failed during initial connection or WebRTCService setup",
+        {
+          error: error instanceof Error ? error.message : String(error),
+        }
+      );
+      this.close(); // Close only if core connection fails
 
-      // Emit failed event
       this.emit("joinFailed", error);
+      throw error; // Re-throw critical connection errors
+    }
 
-      throw error;
+    // Try to enable media, but don't let failures here tear down the whole connection
+    if (this._produce && this._roomState === "connected") {
+      try {
+        await this.enableMic();
+      } catch (micError) {
+        this.logger.error("enableMic() failed within join()", {
+          error:
+            micError instanceof Error ? micError.message : String(micError),
+        });
+        // Notify UI about mic failure if desired
+        this.emit("notification", {
+          type: "error",
+          text: "Could not enable microphone during join.",
+        });
+      }
+
+      // Conditionally enable webcam
+      const urlParams = new URLSearchParams(window.location.search);
+      const produceVideoParam = urlParams.get("produceVideo"); // Or a more specific param
+      const shouldProduceVideo = produceVideoParam !== "false"; // Default to true
+
+      if (shouldProduceVideo) {
+        try {
+          await this.enableWebcam();
+        } catch (webcamError) {
+          this.logger.error("enableWebcam() failed within join()", {
+            error:
+              webcamError instanceof Error
+                ? webcamError.message
+                : String(webcamError),
+          });
+          // Notify UI about webcam failure
+          this.emit("notification", {
+            type: "error",
+            text: "Could not enable webcam during join.",
+          });
+        }
+      }
     }
   }
 
@@ -190,14 +235,6 @@ export class RoomClient extends EventEmitter {
 
     // Reset state
     this._roomState = "closed";
-
-    // Dispatch room state change
-    if (this._store) {
-      this._store.dispatch({
-        type: "SET_ROOM_STATE",
-        payload: "closed",
-      });
-    }
 
     // Emit left event
     this.emit("left");
@@ -217,18 +254,67 @@ export class RoomClient extends EventEmitter {
     // Clean up media
     this.cleanupMedia();
 
-    // Dispatch room state change
-    if (this._store) {
-      this._store.dispatch({
-        type: "SET_ROOM_STATE",
-        payload: "closed",
-      });
-    }
-
     // Emit closed event
     this.emit("closed");
   }
 
+  /**
+   * Detects available codec capabilities for video
+   * @returns Object containing codec support information
+   */
+  public getCodecCapabilities(): {
+    vp8: boolean;
+    h264: boolean;
+    vp9: boolean;
+    av1: boolean;
+  } {
+    if (!this.webrtcService) {
+      this.logger.warn("WebRTC service not initialized");
+      return { vp8: false, h264: false, vp9: false, av1: false };
+    }
+    return this.webrtcService.getCodecCapabilities();
+  }
+
+  /**
+   * Gets the preferred codec based on forced flags and capabilities
+   * @returns The preferred codec or null if none available
+   */
+  private getPreferredCodec(): any {
+    return this.webrtcService.getPreferredCodec("video");
+  }
+
+  /**
+   * Sets preferred codec for video production
+   * @param codec Codec type ('vp8', 'h264', 'vp9', 'av1')
+   */
+  public setPreferredCodec(codec: "vp8" | "h264" | "vp9" | "av1"): void {
+    this.logger.info("Setting preferred codec", { codec });
+
+    // Reset all force flags
+    this._forceVP8 = false;
+    this._forceH264 = false;
+    this._forceVP9 = false;
+    this._forceAV1 = false;
+
+    // Set the requested codec
+    switch (codec) {
+      case "vp8":
+        this._forceVP8 = true;
+        break;
+      case "h264":
+        this._forceH264 = true;
+        break;
+      case "vp9":
+        this._forceVP9 = true;
+        break;
+      case "av1":
+        this._forceAV1 = true;
+        break;
+    }
+
+    // Emit event for UI updates
+    this.emit("codecPreferenceChanged", codec);
+  }
   // Display name methods
   public changeDisplayName(displayName: string): void {
     console.log("changeDisplayName()", displayName);
@@ -297,14 +383,6 @@ export class RoomClient extends EventEmitter {
       }
 
       this._micProducer = producer;
-
-      // Update store
-      if (this._store) {
-        this._store.dispatch({
-          type: "ADD_PRODUCER",
-          payload: producer,
-        });
-      }
 
       // Save stream
       if (!this._localMediaStream) {
@@ -409,7 +487,7 @@ export class RoomClient extends EventEmitter {
   }
 
   public async enableWebcam(): Promise<void> {
-    console.log("enableWebcam()");
+    this.logger.info("enableWebcam()");
 
     if (this._webcamProducer) {
       return;
@@ -440,27 +518,30 @@ export class RoomClient extends EventEmitter {
       });
 
       const track = stream.getVideoTracks()[0];
+      // Produce video with codec preference
+      const codec = this.getPreferredCodec();
+      if (codec) {
+        this.logger.info("Using preferred codec", {
+          codecType: codec.mimeType,
+        });
+      }
 
       if (!track) {
         throw new Error("No video track available");
       }
 
       // Produce video
-      const producer = await this.webrtcService.produceVideo(track, "front");
+      const producer = await this.webrtcService.produceVideo(
+        track,
+        "front",
+        codec
+      );
 
       if (!producer) {
         throw new Error("Failed to produce video");
       }
 
       this._webcamProducer = producer;
-
-      // Update store
-      if (this._store) {
-        this._store.dispatch({
-          type: "ADD_PRODUCER",
-          payload: producer,
-        });
-      }
 
       // Save stream
       if (!this._localMediaStream) {
@@ -672,14 +753,6 @@ export class RoomClient extends EventEmitter {
       }
 
       this._shareProducer = producer;
-
-      // Update store
-      if (this._store) {
-        this._store.dispatch({
-          type: "ADD_PRODUCER",
-          payload: producer,
-        });
-      }
 
       // Save stream
       if (!this._localMediaStream) {
@@ -1215,6 +1288,8 @@ export class RoomClient extends EventEmitter {
   }
 
   private setupServiceEventListeners(): void {
+    // Add consumer score tracking
+    this.setupConsumerScoreTracking();
     // WebRTC service callbacks
     this.webrtcService.onConnect(() => {
       console.log("WebRTC service connected");
@@ -1304,6 +1379,24 @@ export class RoomClient extends EventEmitter {
 
         // Emit event
         this.emit("activeSpeaker", notification.peerId);
+      }
+
+      // Handle mediasoup versions
+      if (notification.type === "mediasoup-versions") {
+        if (this._store && notification.payload) {
+          this.logger.info(
+            "Dispatching mediasoup versions to store",
+            notification.payload
+          );
+          this._store.dispatch({
+            type: "room/setRoomMediasoupInfo",
+            payload: {
+              mediasoupVersion: notification.payload.version,
+              mediasoupClientVersion: notification.payload.clientVersion,
+              mediasoupClientHandler: notification.payload.clientHandler,
+            },
+          });
+        }
       }
 
       // Handle data messages
@@ -1401,6 +1494,422 @@ export class RoomClient extends EventEmitter {
           text: "Could not reset network throttling",
         });
       }
+    }
+  }
+  // Add these methods to the RoomClient.ts class
+
+  /**
+   * Gets remote statistics for the sending transport
+   * @returns Promise with transport statistics
+   * @throws Error if send transport doesn't exist
+   */
+  public async getSendTransportRemoteStats(): Promise<any> {
+    this.log("debug", "getSendTransportRemoteStats()");
+
+    if (!this.webrtcService) {
+      this.log("error", "WebRTC service not initialized");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getTransportStats("send");
+      this.log("debug", "Successfully retrieved send transport remote stats");
+      return stats;
+    } catch (error) {
+      this.log("error", "Failed to get send transport remote stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets remote statistics for the receiving transport
+   * @returns Promise with transport statistics
+   * @throws Error if recv transport doesn't exist
+   */
+  public async getRecvTransportRemoteStats(): Promise<any> {
+    this.log("debug", "getRecvTransportRemoteStats()");
+
+    if (!this.webrtcService) {
+      this.log("error", "WebRTC service not initialized");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getTransportStats("recv");
+      this.log("debug", "Successfully retrieved recv transport remote stats");
+      return stats;
+    } catch (error) {
+      this.log("error", "Failed to get recv transport remote stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets local statistics for the sending transport
+   * @returns Promise with transport statistics
+   * @throws Error if send transport doesn't exist
+   */
+  public async getSendTransportLocalStats(): Promise<any> {
+    this.log("debug", "getSendTransportLocalStats()");
+
+    if (!this.webrtcService) {
+      this.log("error", "WebRTC service not initialized");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getTransportLocalStats("send");
+      this.log("debug", "Successfully retrieved send transport local stats");
+      return stats;
+    } catch (error) {
+      this.log("error", "Failed to get send transport local stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets local statistics for the receiving transport
+   * @returns Promise with transport statistics
+   * @throws Error if recv transport doesn't exist
+   */
+  public async getRecvTransportLocalStats(): Promise<any> {
+    this.log("debug", "getRecvTransportLocalStats()");
+
+    if (!this.webrtcService) {
+      this.log("error", "WebRTC service not initialized");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getTransportLocalStats("recv");
+      this.log("debug", "Successfully retrieved recv transport local stats");
+      return stats;
+    } catch (error) {
+      this.log("error", "Failed to get recv transport local stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets remote statistics for the audio producer (microphone)
+   * @returns Promise with audio producer statistics from server
+   * @throws Error if no audio producer exists
+   */
+  public async getAudioRemoteStats(): Promise<any> {
+    this.logger.debug("getAudioRemoteStats()");
+
+    if (!this._micProducer) {
+      this.logger.warn("No audio producer available");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getProducerStats(
+        this._micProducer.id
+      );
+      this.logger.debug("Successfully retrieved audio producer remote stats");
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get audio producer remote stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets remote statistics for the video producer (webcam or screen share)
+   * @returns Promise with video producer statistics from server
+   * @throws Error if no video producer exists
+   */
+  public async getVideoRemoteStats(): Promise<any> {
+    this.logger.debug("getVideoRemoteStats()");
+
+    const videoProducer = this._webcamProducer || this._shareProducer;
+
+    if (!videoProducer) {
+      this.logger.warn("No video producer available");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getProducerStats(videoProducer.id);
+      this.logger.debug("Successfully retrieved video producer remote stats", {
+        producerType: this._webcamProducer ? "webcam" : "share",
+      });
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get video producer remote stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets local statistics for the audio producer (microphone)
+   * @returns Promise with audio producer statistics from local peer connection
+   * @throws Error if no audio producer exists
+   */
+  public async getAudioLocalStats(): Promise<any> {
+    this.logger.debug("getAudioLocalStats()");
+
+    if (!this._micProducer) {
+      this.logger.warn("No audio producer available");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getProducerStats(
+        this._micProducer.id
+      );
+      this.logger.debug("Successfully retrieved audio producer local stats");
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get audio producer local stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets local statistics for the video producer (webcam or screen share)
+   * @returns Promise with video producer statistics from local peer connection
+   * @throws Error if no video producer exists
+   */
+  public async getVideoLocalStats(): Promise<any> {
+    this.logger.debug("getVideoLocalStats()");
+
+    const videoProducer = this._webcamProducer || this._shareProducer;
+
+    if (!videoProducer) {
+      this.logger.warn("No video producer available");
+      return null;
+    }
+
+    if (!this.webrtcService) {
+      this.logger.error("WebRTC service not initialized");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getProducerStats(videoProducer.id);
+      this.logger.debug("Successfully retrieved video producer local stats", {
+        producerType: this._webcamProducer ? "webcam" : "share",
+      });
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get video producer local stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets remote statistics for a specific consumer
+   * @param consumerId The consumer ID to get stats for
+   * @returns Promise with consumer statistics from server
+   * @throws Error if consumer not found
+   */
+  public async getConsumerRemoteStats(consumerId: string): Promise<any> {
+    this.logger.debug("getConsumerRemoteStats()", { consumerId });
+
+    if (!consumerId) {
+      this.logger.error("Missing consumer ID");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getConsumerStats(consumerId);
+      this.logger.debug("Successfully retrieved consumer remote stats", {
+        consumerId,
+      });
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get consumer remote stats", {
+        consumerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets local statistics for a specific consumer
+   * @param consumerId The consumer ID to get stats for
+   * @returns Promise with consumer statistics from local peer connection
+   * @throws Error if consumer not found
+   */
+  public async getConsumerLocalStats(consumerId: string): Promise<any> {
+    this.logger.debug("getConsumerLocalStats()", { consumerId });
+
+    if (!consumerId) {
+      this.logger.error("Missing consumer ID");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getConsumerLocalStats(consumerId);
+      this.logger.debug("Successfully retrieved consumer local stats", {
+        consumerId,
+      });
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get consumer local stats", {
+        consumerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Sets up consumer score tracking
+   * Called during service event listener setup
+   */
+  private setupConsumerScoreTracking(): void {
+    this.webrtcService.onNotification((notification) => {
+      if (notification.method === "consumerScore") {
+        const { consumerId, score } = notification.data;
+
+        this.logger.debug("Consumer score update", { consumerId, score });
+
+        // Update store with consumer score
+        if (this._store) {
+          this._store.dispatch({
+            type: "SET_CONSUMER_SCORE",
+            payload: { consumerId, score },
+          });
+        }
+
+        // Emit consumer score event
+        this.emit("consumerScore", { consumerId, score });
+      }
+    });
+  }
+
+  /**
+   * Gets remote statistics for chat data producer
+   * @returns Promise with chat data producer statistics from server
+   */
+  public async getChatDataProducerRemoteStats(): Promise<any> {
+    this.logger.debug("getChatDataProducerRemoteStats()");
+
+    if (!this._chatDataProducer) {
+      this.logger.warn("No chat data producer available");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getDataProducerStats(
+        this._chatDataProducer.id
+      );
+      this.logger.debug(
+        "Successfully retrieved chat data producer remote stats"
+      );
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get chat data producer remote stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Gets remote statistics for bot data producer
+   * @returns Promise with bot data producer statistics from server
+   */
+  public async getBotDataProducerRemoteStats(): Promise<any> {
+    this.logger.debug("getBotDataProducerRemoteStats()");
+
+    if (!this._botDataProducer) {
+      this.logger.warn("No bot data producer available");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getDataProducerStats(
+        this._botDataProducer.id
+      );
+      this.logger.debug(
+        "Successfully retrieved bot data producer remote stats"
+      );
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get bot data producer remote stats", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+  /**
+   * Gets remote statistics for a specific data consumer
+   * @param dataConsumerId The data consumer ID to get stats for
+   * @returns Promise with data consumer statistics from server
+   */
+  public async getDataConsumerRemoteStats(
+    dataConsumerId: string
+  ): Promise<any> {
+    this.logger.debug("getDataConsumerRemoteStats()", { dataConsumerId });
+
+    if (!dataConsumerId) {
+      this.logger.error("Missing data consumer ID");
+      return null;
+    }
+
+    try {
+      const stats = await this.webrtcService.getDataConsumerStats(
+        dataConsumerId
+      );
+      this.logger.debug("Successfully retrieved data consumer remote stats", {
+        dataConsumerId,
+      });
+      return stats;
+    } catch (error) {
+      this.logger.error("Failed to get data consumer remote stats", {
+        dataConsumerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Helper method for logging
+   * @param level Log level
+   * @param message Log message
+   * @param data Optional data to log
+   */
+  // Replace the old log method with this one
+  private log(
+    level: "debug" | "info" | "warn" | "error",
+    message: string,
+    data?: any
+  ): void {
+    switch (level) {
+      case "debug":
+        this.logger.debug(message, data);
+        break;
+      case "info":
+        this.logger.info(message, data);
+        break;
+      case "warn":
+        this.logger.warn(message, data);
+        break;
+      case "error":
+        this.logger.error(message, data);
+        break;
     }
   }
 }

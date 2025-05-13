@@ -118,12 +118,17 @@ const PeerView: React.FC<PeerViewProps> = ({
   const [videoResolutionPeriodicTimer, setVideoResolutionPeriodicTimer] =
     useState<NodeJS.Timeout | null>(null);
 
+  // Conditionally get displayNameSet for dependency array
+  const meSpecificDisplayNameSet = isMe
+    ? (peer as Me).displayNameSet
+    : undefined;
+
   // Handle component mount/unmount
   useEffect(() => {
     setIsMounted(true);
 
     // Show tip if display name not set
-    if (isMe && !peer.displayNameSet && rootElemRef.current) {
+    if (isMe && !(peer as Me).displayNameSet && rootElemRef.current) {
       // Show tooltip after a timeout
       const timeout = setTimeout(() => {
         // Could use React-Tooltip show() method here if needed
@@ -160,11 +165,11 @@ const PeerView: React.FC<PeerViewProps> = ({
 
   // Handle display name change
   useEffect(() => {
-    if (isMe && peer.displayNameSet && rootElemRef.current) {
+    if (isMe && meSpecificDisplayNameSet && rootElemRef.current) {
       // Hide tooltip if needed
       // React-Tooltip.hide(rootElemRef.current);
     }
-  }, [isMe, peer.displayNameSet]);
+  }, [isMe, meSpecificDisplayNameSet]);
 
   // Set up media tracks
   const setTracks = (
@@ -204,13 +209,35 @@ const PeerView: React.FC<PeerViewProps> = ({
 
     // Handle video track
     if (newVideoTrack) {
+      console.log(
+        "[PeerView] setTracks - videoTrack:",
+        newVideoTrack
+          ? {
+              id: newVideoTrack.id,
+              kind: newVideoTrack.kind,
+              readyState: newVideoTrack.readyState,
+              enabled: newVideoTrack.enabled,
+              muted: newVideoTrack.muted,
+            }
+          : null
+      );
       const videoStream = new MediaStream();
       videoStream.addTrack(newVideoTrack);
       videoElem.srcObject = videoStream;
 
-      videoElem.oncanplay = () => setVideoCanPlay(true);
+      videoElem.oncanplay = () => {
+        console.log(
+          "[PeerView] oncanplay FIRED. Setting videoCanPlay to true. videoTrack:",
+          videoTrack ? videoTrack.id : null
+        );
+        setVideoCanPlay(true);
+      };
 
       videoElem.onplay = () => {
+        console.log(
+          "[PeerView] onplay FIRED. videoTrack:",
+          videoTrack ? videoTrack.id : null
+        );
         setVideoElemPaused(false);
 
         if (audioElem) {
@@ -422,6 +449,16 @@ const PeerView: React.FC<PeerViewProps> = ({
 
   return (
     <div className="PeerView" ref={rootElemRef}>
+      {console.log(
+        "[PeerView] Rendering. isMe:",
+        isMe,
+        "videoVisible:",
+        videoVisible,
+        "videoCanPlay:",
+        videoCanPlay,
+        "videoTrack:",
+        videoTrack ? videoTrack.id : null
+      )}
       <div className="info">
         <div className="icons">
           <div

@@ -250,26 +250,34 @@ const producersSlice = createSlice({
   initialState: initialState.producers,
   reducers: {
     addProducer: (state, action: PayloadAction<Producer>) => {
-      state[action.payload.id] = action.payload;
+      return {
+        ...state,
+        [action.payload.id]: action.payload,
+      };
     },
     removeProducer: (
       state,
       action: PayloadAction<{ id: string } | { kind: "audio" | "video" }>
     ) => {
       if ("id" in action.payload) {
-        delete state[action.payload.id];
+        const newState = { ...state };
+        delete newState[action.payload.id];
+        return newState;
       } else {
-        // Find producer by kind and remove it
-        // action.payload is of type { kind: 'audio' | 'video' } here
         const kindToRemove = action.payload.kind;
-        const id = Object.keys(state).find((id) => {
+        const idToRemove = Object.keys(state).find((id) => {
           const producer = state[id];
-          return producer.track.kind === kindToRemove;
+          return (
+            producer && producer.track && producer.track.kind === kindToRemove
+          );
         });
 
-        if (id) {
-          delete state[id];
+        if (idToRemove) {
+          const newState = { ...state };
+          delete newState[idToRemove];
+          return newState;
         }
+        return state; // No change if producer not found by kind
       }
     },
     setProducerPaused: (
@@ -279,32 +287,56 @@ const producersSlice = createSlice({
         | { kind: "audio" | "video"; paused: boolean }
       >
     ) => {
+      let producerIdToUpdate: string | undefined;
+      let pausedState: boolean | undefined;
+
       if ("id" in action.payload) {
         if (state[action.payload.id]) {
-          state[action.payload.id].paused = action.payload.paused;
+          producerIdToUpdate = action.payload.id;
+          pausedState = action.payload.paused;
         }
       } else {
-        // Find producer by kind and set paused
-        // action.payload is of type { kind: 'audio' | 'video', paused: boolean } here
         const kindToModify = action.payload.kind;
-        const newPausedState = action.payload.paused;
-        const id = Object.keys(state).find((id) => {
+        producerIdToUpdate = Object.keys(state).find((id) => {
           const producer = state[id];
-          return producer.track.kind === kindToModify;
+          return (
+            producer && producer.track && producer.track.kind === kindToModify
+          );
         });
-
-        if (id) {
-          state[id].paused = newPausedState;
+        if (producerIdToUpdate) {
+          pausedState = action.payload.paused;
         }
       }
+
+      if (
+        producerIdToUpdate &&
+        pausedState !== undefined &&
+        state[producerIdToUpdate]
+      ) {
+        return {
+          ...state,
+          [producerIdToUpdate]: {
+            ...state[producerIdToUpdate],
+            paused: pausedState,
+          },
+        };
+      }
+      return state; // No change if producer not found or pausedState is undefined
     },
     setProducerScore: (
       state,
       action: PayloadAction<{ id: string; score: any }>
     ) => {
       if (state[action.payload.id]) {
-        state[action.payload.id].score = action.payload.score;
+        return {
+          ...state,
+          [action.payload.id]: {
+            ...state[action.payload.id],
+            score: action.payload.score,
+          },
+        };
       }
+      return state; // No change if producer not found
     },
   },
 });

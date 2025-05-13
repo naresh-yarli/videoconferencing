@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Mock Third-Party App - Conference Launcher</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 20px;
+        background-color: #f4f4f4;
+        color: #333;
+      }
+      .container {
+        background-color: #fff;
+        padding: 20px;
+        border-radius: 8px;
+        box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+      }
+      h1 {
+        color: #333;
+      }
+      label {
+        display: block;
+        margin-top: 15px;
+        margin-bottom: 5px;
+        font-weight: bold;
+      }
+      input[type="text"],
+      input[type="password"] {
+        width: calc(100% - 22px);
+        padding: 10px;
+        margin-bottom: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        box-sizing: border-box;
+      }
+      button {
+        background-color: #007bff;
+        color: white;
+        padding: 10px 15px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 16px;
+      }
+      button:hover {
+        background-color: #0056b3;
+      }
+      .error {
+        color: red;
+        margin-top: 10px;
+      }
+      .info {
+        margin-top: 15px;
+        padding: 10px;
+        background-color: #e7f3fe;
+        border-left: 6px solid #2196f3;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>Mock Third-Party App Conference Launcher</h1>
+      <p>
+        This page helps construct the URL to launch the video conference UI.
+        <br />
+        The third-party application backend is assumed to have already created a
+        stream and obtained an auth token for the UI.
+      </p>
+
+      <div>
+        <label for="backendApiUrl"
+          >Backend API URL (e.g., http://localhost:8000):</label
+        >
+        <input type="text" id="backendApiUrl" value="http://localhost:8000" />
+
+        <label for="uiAuthToken"
+          >Auth Token for UI (this becomes the 'apiKey' URL parameter):</label
+        >
+        <input type="password" id="uiAuthToken"
+        value="eyJhbGciOiJSUzI1NiIsImtpZCI6IjU5MWYxNWRlZTg0OTUzNjZjOTgyZTA1MTMzYmNhOGYyNDg5ZWFjNzIiLCJ0eXAiOiJKV1QifQ.eyJuYW1lIjoiTiBUZW5zb3IiLCJwaWN0dXJlIjoiaHR0cHM6Ly9saDMuZ29vZ2xldXNlcmNvbnRlbnQuY29tL2EvQUNnOG9jTFhwVkowZ3NVX2lna2JmeWlneENvQUFZX0NhSmI5U0FXZDZaX29CRFJ2N3ZnZlhvQXg9czk2LWMiLCJyb2xlIjoic3R1ZGVudCIsIm9yZ0lkIjpudWxsLCJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vdmlkZW9zLTIxMjdhIiwiYXVkIjoidmlkZW9zLTIxMjdhIiwiYXV0aF90aW1lIjoxNzQ2OTQwOTgwLCJ1c2VyX2lkIjoiVVhrWHNSYWlsWVAxdm9RbHBDWVVqVnVBOUduMiIsInN1YiI6IlVYa1hzUmFpbFlQMXZvUWxwQ1lValZ1QTlHbjIiLCJpYXQiOjE3NDcwMjY0NTcsImV4cCI6MTc0NzAzMDA1NywiZW1haWwiOiJuLnRlbnNvckBnbWFpbC5jb20iLCJlbWFpbF92ZXJpZmllZCI6dHJ1ZSwiZmlyZWJhc2UiOnsiaWRlbnRpdGllcyI6eyJnb29nbGUuY29tIjpbIjEwNjQ5MDMxNDc5NDYyOTY1ODcwOSJdLCJlbWFpbCI6WyJuLnRlbnNvckBnbWFpbC5jb20iXX0sInNpZ25faW5fcHJvdmlkZXIiOiJnb29nbGUuY29tIn19.UvtstCkjoYrI-wzqKnp_3oQAq_o4Tqn-Bi7IOhUXb_0MGGIc6ZJpUxa_SS9gpQGZdmnXOHHTX4nV1y5FAlsdSmv7FoqdOTcx9owbK1XSa-u5zvmf5JnhunXHMcR-Wa2VYUFtCFe6XfoyyjqXT4KWWo-OT007UbFZ7bKkAqI6XcXgK05bvdqLPLuxoC1D7Kd2lNw0WJH-Sq543kbaMbdzu3WnFrQRCbHa9iK4UgIC2m9erx_wPGXBiGDN10sHK6dUTumhjiN45QHgiO570R5T-rie2YDYVxS5XZOXLLLqa51AMNRjPu-0NUAbB3t66xOEtcErLD3FmtBDipngbKHBiw",
+        ", " />
+
+        <label for="streamId"
+          >Stream ID (this becomes the 'roomId' URL parameter):</label
+        >
+        <input type="text" id="streamId" value="21" />
+
+        <label for="displayName">Your Display Name (in conference):</label>
+        <input type="text" id="displayName" value="TestUser" />
+      </div>
+
+      <button onclick="launchConference()">
+        Construct URL & Launch Conference
+      </button>
+
+      <div id="errorMessage" class="error"></div>
+      <div id="infoMessage" class="info" style="display: none"></div>
+    </div>
+
+    <script>
+      function launchConference() {
+        const backendApiUrl = document
+          .getElementById("backendApiUrl")
+          .value.trim();
+        const uiAuthToken = document.getElementById("uiAuthToken").value.trim(); // This is the token for WebRTCService
+        const streamId = document.getElementById("streamId").value.trim(); // This is the roomId for the UI
+        const displayName = document.getElementById("displayName").value.trim();
+        const conferenceAppUrl = "http://localhost:3001/"; // URL of your main video conferencing React app
+
+        const errorDiv = document.getElementById("errorMessage");
+        const infoDiv = document.getElementById("infoMessage");
+        errorDiv.textContent = "";
+        infoDiv.style.display = "none";
+        infoDiv.textContent = "";
+
+        if (!backendApiUrl || !uiAuthToken || !streamId || !displayName) {
+          errorDiv.textContent = "Please fill in all fields.";
+          return;
+        }
+
+        infoDiv.textContent = `Constructing URL...`;
+        infoDiv.style.display = "block";
+
+        try {
+          const params = new URLSearchParams();
+          params.append("apiUrl", backendApiUrl); // For WebRTCService to know where to make API calls
+          params.append("apiKey", uiAuthToken); // This is the AuthToken WebRTCService will use
+          params.append("roomId", streamId); // This is the Stream/Room ID
+          params.append("displayName", displayName);
+
+          const finalUrl = `${conferenceAppUrl}?${params.toString()}`;
+          infoDiv.textContent += `\nRedirecting to: ${finalUrl.replace(
+            uiAuthToken,
+            "[REDACTED_TOKEN]"
+          )}`;
+
+          // Redirect
+          window.location.href = finalUrl;
+        } catch (error) {
+          console.error("Error constructing URL:", error);
+          errorDiv.textContent = `Error: ${error.message}`;
+          infoDiv.style.display = "none";
+        }
+      }
+    </script>
+  </body>
+</html>

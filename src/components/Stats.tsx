@@ -1,8 +1,10 @@
 // components/Stats.tsx
 import React, { useState, useEffect } from "react";
 import { useSelector, useDispatch } from "react-redux";
+import { createSelector } from "@reduxjs/toolkit";
 import { useRoom } from "@/contexts/RoomContext";
 import { RootState } from "@/redux/store";
+import { Peer as PeerType, Me as MeType } from "@/types"; // Import MeType
 
 interface StatsState {
   sendTransportRemoteStats: any;
@@ -42,55 +44,68 @@ const initialStatsState: StatsState = {
   botDataConsumerRemoteStats: null,
 };
 
-const Stats: React.FC = () => {
-  const { roomClient } = useRoom();
-  const dispatch = useDispatch();
+// Input selectors for stateInfo
+const selectStatsPeerId = (state: RootState) => state.room.statsPeerId;
+const selectMe = (state: RootState) => state.me;
+const selectPeers = (state: RootState) => state.peers;
+const selectConsumers = (state: RootState) => state.consumers;
+const selectDataConsumers = (state: RootState) => state.dataConsumers;
 
-  // Get state
-  const statsPeerId = useSelector((state: RootState) => state.room.statsPeerId);
-
-  // Get peer info if a peer ID is selected
-  const stateInfo = useSelector((state: RootState) => {
+// Memoized selector for stateInfo
+const selectDerivedStateInfo = createSelector(
+  [
+    selectStatsPeerId,
+    selectMe,
+    selectPeers,
+    selectConsumers,
+    selectDataConsumers,
+  ],
+  (statsPeerId, me, peers, consumersMap, dataConsumersMap) => {
     if (!statsPeerId) return {};
 
-    const isMe = statsPeerId === state.me.id;
-    const peer = isMe ? state.me : state.peers[statsPeerId];
+    const isMe = statsPeerId === me.id;
+    const peer: MeType | PeerType | undefined = isMe ? me : peers[statsPeerId];
 
-    // If the peer doesn't exist, return empty object
     if (!peer) return {};
 
-    // Get audio/video consumers for this peer
-    let audioConsumerId;
-    let videoConsumerId;
-    let chatDataConsumerId;
-    let botDataConsumerId;
+    let audioConsumerId: string | undefined;
+    let videoConsumerId: string | undefined;
+    let chatDataConsumerId: string | undefined;
+    let botDataConsumerId: string | undefined;
 
-    if (!isMe) {
-      // Find consumers for this peer
-      for (const consumerId of peer.consumers || []) {
-        const consumer = state.consumers[consumerId];
+    if (!isMe && peer && "consumers" in peer) {
+      // Check if peer is of type PeerType and has consumers
+      const peerAsPeerType = peer as PeerType; // Type assertion
+      for (const consumerId of peerAsPeerType.consumers || []) {
+        const consumer = consumersMap[consumerId];
         if (consumer?.track?.kind === "audio") {
           audioConsumerId = consumer.id;
         } else if (consumer?.track?.kind === "video") {
           videoConsumerId = consumer.id;
         }
       }
-
-      // Find data consumers for this peer
-      for (const dataConsumerId of peer.dataConsumers || []) {
-        const dataConsumer = state.dataConsumers[dataConsumerId];
-        if (dataConsumer?.label === "chat") {
-          chatDataConsumerId = dataConsumer.id;
-        } else if (dataConsumer?.label === "bot") {
-          botDataConsumerId = dataConsumer.id;
+      if ("dataConsumers" in peerAsPeerType) {
+        for (const dcId of peerAsPeerType.dataConsumers || []) {
+          const dataConsumer = dataConsumersMap[dcId];
+          if (dataConsumer?.label === "chat") {
+            chatDataConsumerId = dataConsumer.id;
+          } else if (dataConsumer?.label === "bot") {
+            botDataConsumerId = dataConsumer.id;
+          }
         }
       }
-    } else {
-      // For self, find data consumers with bot label
-      for (const dataConsumerId of Object.keys(state.dataConsumers)) {
-        const dataConsumer = state.dataConsumers[dataConsumerId];
+    } else if (isMe) {
+      // For self (MeType), MeType does not have .consumers or .dataConsumers arrays.
+      // Logic for finding botDataConsumerId for 'me' needs to be based on global dataConsumersMap
+      // and potentially a link from dataConsumer back to a peerId or if it's a global bot.
+      // This example assumes bot data consumers might not be directly linked to 'me' via an array on the 'me' object.
+      for (const dcId of Object.keys(dataConsumersMap)) {
+        const dataConsumer = dataConsumersMap[dcId];
         if (dataConsumer?.label === "bot") {
+          // This simplistic approach takes the first bot data consumer found.
+          // If multiple bots or specific bot association is needed, this logic needs refinement.
           botDataConsumerId = dataConsumer.id;
+          break; // Assuming one bot data consumer for 'me' for now
         }
       }
     }
@@ -104,19 +119,26 @@ const Stats: React.FC = () => {
       chatDataConsumerId,
       botDataConsumerId,
     };
-  });
+  }
+);
 
-  // Stats collection state
+const Stats: React.FC = () => {
+  const { roomClient } = useRoom();
+  const dispatch = useDispatch();
+
+  const statsPeerId = useSelector(selectStatsPeerId);
+  const stateInfo = useSelector(selectDerivedStateInfo);
+
   const [stats, setStats] = useState<StatsState>(initialStatsState);
   const [delayTimer, setDelayTimer] = useState<NodeJS.Timeout | null>(null);
 
-  // Reset stats when peer changes
   useEffect(() => {
-    if (statsPeerId) {
-      // Start collecting stats with a small delay
+    if (statsPeerId && stateInfo.peerId) {
+      // Check if stateInfo.peerId exists
       const timer = setTimeout(() => startCollectingStats(), 250);
       setDelayTimer(timer);
-    } else {
+    } else if (!statsPeerId) {
+      // Only stop if statsPeerId is null/undefined
       stopCollectingStats();
     }
 
@@ -127,357 +149,252 @@ const Stats: React.FC = () => {
     };
   }, [statsPeerId, stateInfo.peerId]);
 
-  // Clean up on unmount
   useEffect(() => {
     return () => {
       stopCollectingStats();
     };
   }, []);
 
-  // Start collecting stats
   const startCollectingStats = async () => {
-    if (!roomClient || !statsPeerId) return;
+    if (!roomClient || !statsPeerId || !stateInfo.peerId) return;
 
     let newStats: Partial<StatsState> = {};
 
-    if (stateInfo.isMe) {
-      // Collect stats for our own producers and transports
-      newStats.sendTransportRemoteStats = await roomClient
-        .getTransportStats("send")
-        .catch(() => null);
-      newStats.sendTransportLocalStats = await roomClient
-        .getTransportLocalStats("send")
-        .catch(() => null);
-      newStats.recvTransportRemoteStats = await roomClient
-        .getTransportStats("recv")
-        .catch(() => null);
-      newStats.recvTransportLocalStats = await roomClient
-        .getTransportLocalStats("recv")
-        .catch(() => null);
-
-      newStats.audioProducerRemoteStats = await roomClient
-        .getAudioStats()
-        .catch(() => null);
-      newStats.audioProducerLocalStats = await roomClient
-        .getAudioLocalStats()
-        .catch(() => null);
-
-      newStats.videoProducerRemoteStats = await roomClient
-        .getVideoStats()
-        .catch(() => null);
-      newStats.videoProducerLocalStats = await roomClient
-        .getVideoLocalStats()
-        .catch(() => null);
-
-      newStats.chatDataProducerRemoteStats = await roomClient
-        .getChatDataProducerStats()
-        .catch(() => null);
-      newStats.botDataProducerRemoteStats = await roomClient
-        .getBotDataProducerStats()
-        .catch(() => null);
-
-      if (stateInfo.botDataConsumerId) {
-        newStats.botDataConsumerRemoteStats = await roomClient
-          .getDataConsumerStats(stateInfo.botDataConsumerId)
+    try {
+      if (stateInfo.isMe) {
+        newStats.sendTransportRemoteStats = await roomClient
+          .getSendTransportRemoteStats()
           .catch(() => null);
+        newStats.sendTransportLocalStats = await roomClient
+          .getSendTransportLocalStats()
+          .catch(() => null);
+        newStats.recvTransportRemoteStats = await roomClient
+          .getRecvTransportRemoteStats()
+          .catch(() => null);
+        newStats.recvTransportLocalStats = await roomClient
+          .getRecvTransportLocalStats()
+          .catch(() => null);
+        newStats.audioProducerRemoteStats = await roomClient
+          .getAudioRemoteStats()
+          .catch(() => null);
+        newStats.audioProducerLocalStats = await roomClient
+          .getAudioLocalStats()
+          .catch(() => null);
+        newStats.videoProducerRemoteStats = await roomClient
+          .getVideoRemoteStats()
+          .catch(() => null);
+        newStats.videoProducerLocalStats = await roomClient
+          .getVideoLocalStats()
+          .catch(() => null);
+        newStats.chatDataProducerRemoteStats = await roomClient
+          .getChatDataProducerRemoteStats()
+          .catch(() => null);
+        newStats.botDataProducerRemoteStats = await roomClient
+          .getBotDataProducerRemoteStats()
+          .catch(() => null);
+
+        if (stateInfo.botDataConsumerId) {
+          newStats.botDataConsumerRemoteStats = await roomClient
+            .getDataConsumerRemoteStats(stateInfo.botDataConsumerId)
+            .catch(() => null);
+        }
+      } else {
+        if (stateInfo.audioConsumerId) {
+          newStats.audioConsumerRemoteStats = await roomClient
+            .getConsumerRemoteStats(stateInfo.audioConsumerId)
+            .catch(() => null);
+          newStats.audioConsumerLocalStats = await roomClient
+            .getConsumerLocalStats(stateInfo.audioConsumerId)
+            .catch(() => null);
+        }
+        if (stateInfo.videoConsumerId) {
+          newStats.videoConsumerRemoteStats = await roomClient
+            .getConsumerRemoteStats(stateInfo.videoConsumerId)
+            .catch(() => null);
+          newStats.videoConsumerLocalStats = await roomClient
+            .getConsumerLocalStats(stateInfo.videoConsumerId)
+            .catch(() => null);
+        }
+        if (stateInfo.chatDataConsumerId) {
+          newStats.chatDataConsumerRemoteStats = await roomClient
+            .getDataConsumerRemoteStats(stateInfo.chatDataConsumerId)
+            .catch(() => null);
+        }
       }
-    } else {
-      // Collect stats for consumers
-      if (stateInfo.audioConsumerId) {
-        newStats.audioConsumerRemoteStats = await roomClient
-          .getConsumerStats(stateInfo.audioConsumerId)
-          .catch(() => null);
-        newStats.audioConsumerLocalStats = await roomClient
-          .getConsumerLocalStats(stateInfo.audioConsumerId)
-          .catch(() => null);
-      }
-
-      if (stateInfo.videoConsumerId) {
-        newStats.videoConsumerRemoteStats = await roomClient
-          .getConsumerStats(stateInfo.videoConsumerId)
-          .catch(() => null);
-        newStats.videoConsumerLocalStats = await roomClient
-          .getConsumerLocalStats(stateInfo.videoConsumerId)
-          .catch(() => null);
-      }
-
-      if (stateInfo.chatDataConsumerId) {
-        newStats.chatDataConsumerRemoteStats = await roomClient
-          .getDataConsumerStats(stateInfo.chatDataConsumerId)
-          .catch(() => null);
-      }
+    } catch (error) {
+      console.error("Error collecting stats:", error);
+      // Set specific stats to error objects or handle as needed
     }
 
     setStats((prevStats) => ({ ...prevStats, ...newStats }));
 
-    // Schedule the next stats collection
     const timer = setTimeout(() => startCollectingStats(), 2500);
     setDelayTimer(timer);
   };
 
-  // Stop collecting stats
   const stopCollectingStats = () => {
     if (delayTimer) {
       clearTimeout(delayTimer);
       setDelayTimer(null);
     }
-
     setStats(initialStatsState);
   };
 
-  // Close stats
   const handleClose = () => {
-    dispatch({
-      type: "SET_ROOM_STATS_PEER_ID",
-      payload: null,
-    });
+    dispatch({ type: "room/setStatsPeerId", payload: null }); // Use slice action type
   };
 
-  // Render stats
-  const renderStats = (title: string, stats: any) => {
+  const renderStats = (title: string, statsData: any) => {
+    // Renamed stats to statsData to avoid conflict
     const anchor = title.replace(/[ ]+/g, "-");
 
-    if (typeof stats?.values === "function") {
-      stats = Array.from(stats.values());
+    let dataToRender = statsData;
+    if (
+      typeof statsData?.values === "function" &&
+      !(statsData instanceof Map)
+    ) {
+      dataToRender = Array.from(statsData.values());
+    } else if (statsData instanceof Map) {
+      dataToRender = Array.from(statsData.entries()).map(([key, value]) => ({
+        key,
+        ...value,
+      }));
+    }
+
+    if (
+      !dataToRender ||
+      (Array.isArray(dataToRender) && dataToRender.length === 0)
+    ) {
+      return (
+        <div className="items" key={title}>
+          <h2 id={anchor}>{title}</h2>
+          <p>No data available.</p>
+        </div>
+      );
     }
 
     return (
       <div className="items" key={title}>
         <h2 id={anchor}>{title}</h2>
-
-        {stats.map((item: any, idx: number) => (
-          <div className="item" key={idx}>
-            {Object.keys(item).map((key) => (
-              <div className="line" key={key}>
-                <p className="key">{key}</p>
-                <div className="value">
-                  <pre>
-                    {typeof item[key] === "number"
-                      ? JSON.stringify(
-                          Math.round(item[key] * 100) / 100,
-                          null,
-                          "  "
-                        )
-                      : JSON.stringify(item[key], null, "  ")}
-                  </pre>
-                </div>
-              </div>
-            ))}
-          </div>
-        ))}
+        {(Array.isArray(dataToRender) ? dataToRender : [dataToRender]).map(
+          (item: any, idx: number) => (
+            <div className="item" key={idx}>
+              {Object.entries(item).map(([key, value]) => {
+                if (typeof value === "object" && value !== null) {
+                  return (
+                    <div className="sub-items" key={key}>
+                      <strong>{key}:</strong>
+                      {Object.entries(value).map(([subKey, subValue]) => (
+                        <p key={subKey} className="sub-item">
+                          {subKey}: {String(subValue)}
+                        </p>
+                      ))}
+                    </div>
+                  );
+                }
+                return (
+                  <p key={key}>
+                    {key}: {String(value)}
+                  </p>
+                );
+              })}
+            </div>
+          )
+        )}
       </div>
     );
   };
 
-  // If no peer is selected, don't render
-  if (!statsPeerId) {
-    return null;
+  if (!statsPeerId || !stateInfo.peerId) {
+    return null; // Don't render if no peer is selected for stats
   }
-
-  const {
-    sendTransportRemoteStats,
-    sendTransportLocalStats,
-    recvTransportRemoteStats,
-    recvTransportLocalStats,
-    audioProducerRemoteStats,
-    audioProducerLocalStats,
-    videoProducerRemoteStats,
-    videoProducerLocalStats,
-    chatDataProducerRemoteStats,
-    botDataProducerRemoteStats,
-    audioConsumerRemoteStats,
-    audioConsumerLocalStats,
-    videoConsumerRemoteStats,
-    videoConsumerLocalStats,
-    chatDataConsumerRemoteStats,
-    botDataConsumerRemoteStats,
-  } = stats;
 
   return (
     <div className="Stats">
-      <div className={`content ${statsPeerId ? "visible" : ""}`}>
-        <div className="header">
-          <div className="info">
-            <div className="close-icon" onClick={handleClose} />
+      <div className="header">
+        <h1>Statistics for {stateInfo.peerDisplayName || statsPeerId}</h1>
+        <div className="close" onClick={handleClose} />
+      </div>
 
-            {stateInfo.isMe ? (
-              <h1>Your Stats</h1>
-            ) : (
-              <h1>Stats of {stateInfo.peerDisplayName}</h1>
+      <div className="content">
+        {stateInfo.isMe && (
+          <>
+            {renderStats(
+              "Send Transport (Remote)",
+              stats.sendTransportRemoteStats
             )}
-          </div>
-
-          <div className="list">
-            {/* Transport stats links */}
-            {(sendTransportRemoteStats || sendTransportLocalStats) && (
-              <p>
-                {"send transport stats: "}
-                <a href="#send-transport-remote-stats">[remote]</a>
-                <span> </span>
-                <a href="#send-transport-local-stats">[local]</a>
-              </p>
+            {renderStats(
+              "Send Transport (Local)",
+              stats.sendTransportLocalStats
             )}
-
-            {(recvTransportRemoteStats || recvTransportLocalStats) && (
-              <p>
-                {"recv transport stats: "}
-                <a href="#recv-transport-remote-stats">[remote]</a>
-                <span> </span>
-                <a href="#recv-transport-local-stats">[local]</a>
-              </p>
+            {renderStats(
+              "Recv Transport (Remote)",
+              stats.recvTransportRemoteStats
             )}
-
-            {/* Producer stats links */}
-            {(audioProducerRemoteStats || audioProducerLocalStats) && (
-              <p>
-                {"audio producer stats: "}
-                <a href="#audio-producer-remote-stats">[remote]</a>
-                <span> </span>
-                <a href="#audio-producer-local-stats">[local]</a>
-              </p>
+            {renderStats(
+              "Recv Transport (Local)",
+              stats.recvTransportLocalStats
             )}
-
-            {(videoProducerRemoteStats || videoProducerLocalStats) && (
-              <p>
-                {"video producer stats: "}
-                <a href="#video-producer-remote-stats">[remote]</a>
-                <span> </span>
-                <a href="#video-producer-local-stats">[local]</a>
-              </p>
+            {renderStats(
+              "Audio Producer (Remote)",
+              stats.audioProducerRemoteStats
             )}
-
-            {/* Data producer stats links */}
-            {chatDataProducerRemoteStats && (
-              <p>
-                {"chat dataproducer stats: "}
-                <a href="#chat-dataproducer-remote-stats">[remote]</a>
-                <span> </span>
-                <a className="disabled">[local]</a>
-              </p>
+            {renderStats(
+              "Audio Producer (Local)",
+              stats.audioProducerLocalStats
             )}
-
-            {botDataProducerRemoteStats && (
-              <p>
-                {"bot dataproducer stats: "}
-                <a href="#bot-dataproducer-remote-stats">[remote]</a>
-                <span> </span>
-                <a className="disabled">[local]</a>
-              </p>
+            {renderStats(
+              "Video Producer (Remote)",
+              stats.videoProducerRemoteStats
             )}
-
-            {/* Consumer stats links */}
-            {(audioConsumerRemoteStats || audioConsumerLocalStats) && (
-              <p>
-                {"audio consumer stats: "}
-                <a href="#audio-consumer-remote-stats">[remote]</a>
-                <span> </span>
-                <a href="#audio-consumer-local-stats">[local]</a>
-              </p>
+            {renderStats(
+              "Video Producer (Local)",
+              stats.videoProducerLocalStats
             )}
-
-            {(videoConsumerRemoteStats || videoConsumerLocalStats) && (
-              <p>
-                {"video consumer stats: "}
-                <a href="#video-consumer-remote-stats">[remote]</a>
-                <span> </span>
-                <a href="#video-consumer-local-stats">[local]</a>
-              </p>
+            {renderStats(
+              "Chat Data Producer (Remote)",
+              stats.chatDataProducerRemoteStats
             )}
-
-            {/* Data consumer stats links */}
-            {chatDataConsumerRemoteStats && (
-              <p>
-                {"chat dataconsumer stats: "}
-                <a href="#chat-dataconsumer-remote-stats">[remote]</a>
-                <span> </span>
-                <a className="disabled">[local]</a>
-              </p>
+            {renderStats(
+              "Bot Data Producer (Remote)",
+              stats.botDataProducerRemoteStats
             )}
-
-            {botDataConsumerRemoteStats && (
-              <p>
-                {"bot dataconsumer stats: "}
-                <a href="#bot-dataconsumer-remote-stats">[remote]</a>
-                <span> </span>
-                <a className="disabled">[local]</a>
-              </p>
-            )}
-          </div>
-        </div>
-
-        <div className="stats">
-          {/* Render transport stats */}
-          {sendTransportRemoteStats &&
-            renderStats(
-              "send transport remote stats",
-              sendTransportRemoteStats
-            )}
-          {sendTransportLocalStats &&
-            renderStats("send transport local stats", sendTransportLocalStats)}
-          {recvTransportRemoteStats &&
-            renderStats(
-              "recv transport remote stats",
-              recvTransportRemoteStats
-            )}
-          {recvTransportLocalStats &&
-            renderStats("recv transport local stats", recvTransportLocalStats)}
-
-          {/* Render producer stats */}
-          {audioProducerRemoteStats &&
-            renderStats(
-              "audio producer remote stats",
-              audioProducerRemoteStats
-            )}
-          {audioProducerLocalStats &&
-            renderStats("audio producer local stats", audioProducerLocalStats)}
-          {videoProducerRemoteStats &&
-            renderStats(
-              "video producer remote stats",
-              videoProducerRemoteStats
-            )}
-          {videoProducerLocalStats &&
-            renderStats("video producer local stats", videoProducerLocalStats)}
-
-          {/* Render data producer stats */}
-          {chatDataProducerRemoteStats &&
-            renderStats(
-              "chat dataproducer remote stats",
-              chatDataProducerRemoteStats
-            )}
-          {botDataProducerRemoteStats &&
-            renderStats(
-              "bot dataproducer remote stats",
-              botDataProducerRemoteStats
-            )}
-
-          {/* Render consumer stats */}
-          {audioConsumerRemoteStats &&
-            renderStats(
-              "audio consumer remote stats",
-              audioConsumerRemoteStats
-            )}
-          {audioConsumerLocalStats &&
-            renderStats("audio consumer local stats", audioConsumerLocalStats)}
-          {videoConsumerRemoteStats &&
-            renderStats(
-              "video consumer remote stats",
-              videoConsumerRemoteStats
-            )}
-          {videoConsumerLocalStats &&
-            renderStats("video consumer local stats", videoConsumerLocalStats)}
-
-          {/* Render data consumer stats */}
-          {chatDataConsumerRemoteStats &&
-            renderStats(
-              "chat dataconsumer remote stats",
-              chatDataConsumerRemoteStats
-            )}
-          {botDataConsumerRemoteStats &&
-            renderStats(
-              "bot dataconsumer remote stats",
-              botDataConsumerRemoteStats
-            )}
-        </div>
+            {stateInfo.botDataConsumerId &&
+              renderStats(
+                "Bot Data Consumer (Remote)",
+                stats.botDataConsumerRemoteStats
+              )}
+          </>
+        )}
+        {!stateInfo.isMe && (
+          <>
+            {stateInfo.audioConsumerId &&
+              renderStats(
+                "Audio Consumer (Remote)",
+                stats.audioConsumerRemoteStats
+              )}
+            {stateInfo.audioConsumerId &&
+              renderStats(
+                "Audio Consumer (Local)",
+                stats.audioConsumerLocalStats
+              )}
+            {stateInfo.videoConsumerId &&
+              renderStats(
+                "Video Consumer (Remote)",
+                stats.videoConsumerRemoteStats
+              )}
+            {stateInfo.videoConsumerId &&
+              renderStats(
+                "Video Consumer (Local)",
+                stats.videoConsumerLocalStats
+              )}
+            {stateInfo.chatDataConsumerId &&
+              renderStats(
+                "Chat Data Consumer (Remote)",
+                stats.chatDataConsumerRemoteStats
+              )}
+          </>
+        )}
       </div>
     </div>
   );

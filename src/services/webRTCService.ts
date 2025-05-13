@@ -1,8 +1,7 @@
 // services/WebRTCService.ts
-import { Device } from "mediasoup-client";
+import { Device, version as mediasoupClientVersion } from "mediasoup-client";
 import { Peer, WebSocketTransport } from "protoo-client";
 import { v4 as uuidv4 } from "uuid";
-import { authManager } from "@/services/authManager";
 import {
   AuthConfig,
   ConnectionInfo,
@@ -11,6 +10,8 @@ import {
   DataProducer,
   DataConsumer,
 } from "@/types";
+import { EnhancedEventEmitter } from "./EnhancedEventEmitter";
+import Logger from "./Logger";
 
 interface RtpCodecCapability {
   mimeType: string;
@@ -31,9 +32,9 @@ type TransportConnectionState =
   | "closed"
   | "disconnected";
 
-export class WebRTCService {
-  private apiUrl: string;
-  private apiKey: string;
+export class WebRTCService extends EnhancedEventEmitter {
+  private readonly apiUrl: string;
+  private readonly authToken: string;
 
   private streamId: string | null = null;
   private peerId: string | null = null;
@@ -67,15 +68,14 @@ export class WebRTCService {
     | null = null;
   private onNotificationCallback: ((notification: any) => void) | null = null;
 
-  constructor(config: AuthConfig) {
-    if (!config.apiUrl || !config.apiKey) {
-      throw new Error(
-        "API URL and API Key are required for WebRTCService instantiation"
-      );
-    }
+  private logger: Logger;
+  private producerIdPromises = new Map<string, (id: string) => void>();
 
-    this.apiUrl = config.apiUrl.replace(/\/$/, ""); // Remove trailing slash
-    this.apiKey = config.apiKey;
+  constructor(config: AuthConfig) {
+    super();
+    this.logger = new Logger("WebRTCService");
+    this.apiUrl = config.apiUrl;
+    this.authToken = config.authToken;
 
     this.log("debug", "WebRTCService constructor called");
 
@@ -342,6 +342,23 @@ export class WebRTCService {
     this.log("info", "Creating audio producer");
 
     try {
+      const tempId = uuidv4();
+      let serverAssignedProducerId: string | undefined;
+
+      const idPromise = new Promise<string>((resolve, reject) => {
+        this.producerIdPromises.set(tempId, resolve);
+        setTimeout(() => {
+          if (this.producerIdPromises.has(tempId)) {
+            this.producerIdPromises.delete(tempId);
+            reject(
+              new Error(
+                `Timeout waiting for server-assigned ID for tempId: ${tempId}`
+              )
+            );
+          }
+        }, 10000);
+      });
+
       const producer = await this.sendTransport.produce({
         track,
         codecOptions: {
@@ -350,16 +367,41 @@ export class WebRTCService {
           opusFec: true,
           opusNack: true,
         },
-        appData: { source: "mic" },
+        appData: { source: "mic", tempId },
       });
+
+      try {
+        serverAssignedProducerId = await idPromise;
+        this.log(
+          "info",
+          `Received server-assigned producer ID (audio): ${serverAssignedProducerId}`
+        );
+      } catch (idError) {
+        this.log(
+          "error",
+          "Failed to get server-assigned producer ID (audio)",
+          idError
+        );
+      }
+
+      const finalProducerId = serverAssignedProducerId || producer.id;
+
+      if (!finalProducerId) {
+        this.log("error", "Failed to obtain a valid producer ID for audio.");
+        if (this.producerIdPromises.has(tempId)) {
+          this.producerIdPromises.delete(tempId);
+        }
+        throw new Error("Failed to obtain a valid producer ID for audio.");
+      }
 
       this.log(
         "info",
-        "Mediasoup-client audio Producer object created by transport.produce()",
+        "Mediasoup-client audio Producer object after 'produce' and ID promise",
         {
-          producerId: producer.id,
-          producerAppData: producer.appData,
-          producerPaused: producer.paused,
+          producerId: finalProducerId,
+          originalProducerId: producer.id,
+          appData: producer.appData,
+          paused: producer.paused,
         }
       );
 
@@ -376,7 +418,7 @@ export class WebRTCService {
       });
 
       const producerInfo: Producer = {
-        id: producer.id,
+        id: finalProducerId,
         deviceLabel: track.label,
         paused: producer.paused,
         track: producer.track,
@@ -385,6 +427,11 @@ export class WebRTCService {
       };
 
       if (this.onProducerCallback) {
+        this.log(
+          "info",
+          "Calling onProducerCallback with producerInfo (audio)",
+          { producerInfo }
+        );
         this.onProducerCallback(producerInfo);
       }
 
@@ -400,7 +447,8 @@ export class WebRTCService {
 
   public async produceVideo(
     track: MediaStreamTrack,
-    type: "front" | "back" | "share" = "front"
+    type: "front" | "back" | "share" = "front",
+    preferredCodec?: any
   ): Promise<Producer | null> {
     if (!this.sendTransport || !this.device) {
       throw new Error("Send transport not created or device not loaded");
@@ -412,13 +460,11 @@ export class WebRTCService {
 
     this.log("info", "Creating video producer", { type });
 
-    // Configure encodings based on type
     const encodings = this.getEncodings(type);
     const codecOptions = {
       videoGoogleStartBitrate: 1000,
     };
 
-    const preferredCodec = this.getPreferredCodec("video");
     this.log("debug", "Initial preferred video codec", preferredCodec);
     this.log(
       "debug",
@@ -428,8 +474,6 @@ export class WebRTCService {
 
     let finalCodec = preferredCodec;
 
-    // If simulcast is active (more than one encoding) and VP9 is preferred,
-    // try to use VP8 or H264 instead, as VP9 simulcast might not be supported.
     if (
       encodings &&
       encodings.length > 1 &&
@@ -476,26 +520,72 @@ export class WebRTCService {
         );
       }
     }
-
     this.log("info", "Final video codec for produce()", finalCodec);
 
     try {
+      const tempId = uuidv4();
+      let serverAssignedProducerId: string | undefined;
+
+      const idPromise = new Promise<string>((resolve, reject) => {
+        this.producerIdPromises.set(tempId, resolve);
+        setTimeout(() => {
+          if (this.producerIdPromises.has(tempId)) {
+            this.producerIdPromises.delete(tempId);
+            reject(
+              new Error(
+                `Timeout waiting for server-assigned ID for tempId: ${tempId}`
+              )
+            );
+          }
+        }, 10000);
+      });
+
       const producer = await this.sendTransport.produce({
         track,
-        encodings,
+        encodings: this.getEncodings(type),
         codecOptions,
-        codec: finalCodec, // Use the determined finalCodec
-        appData: { source: type },
+        codec: finalCodec,
+        appData: { source: type, tempId },
       });
+
+      try {
+        serverAssignedProducerId = await idPromise;
+        this.log(
+          "info",
+          `Received server-assigned producer ID (video): ${serverAssignedProducerId}`
+        );
+      } catch (idError) {
+        this.log(
+          "error",
+          "Failed to get server-assigned producer ID (video)",
+          idError
+        );
+      }
+
+      const finalProducerId = serverAssignedProducerId || producer.id;
+
+      if (!finalProducerId) {
+        this.log(
+          "error",
+          `Failed to obtain a valid producer ID for video (${type}).`
+        );
+        if (this.producerIdPromises.has(tempId)) {
+          this.producerIdPromises.delete(tempId);
+        }
+        throw new Error(
+          `Failed to obtain a valid producer ID for video (${type}).`
+        );
+      }
 
       this.log(
         "info",
-        "Mediasoup-client video Producer object created by transport.produce()",
+        "Mediasoup-client video Producer object after 'produce' and ID promise",
         {
-          producerId: producer.id,
-          producerAppData: producer.appData,
-          producerType: type,
-          producerPaused: producer.paused,
+          producerId: finalProducerId,
+          originalProducerId: producer.id,
+          appData: producer.appData,
+          type,
+          paused: producer.paused,
         }
       );
 
@@ -512,7 +602,7 @@ export class WebRTCService {
       });
 
       const producerInfo: Producer = {
-        id: producer.id,
+        id: finalProducerId,
         deviceLabel: track.label,
         type,
         paused: producer.paused,
@@ -522,6 +612,11 @@ export class WebRTCService {
       };
 
       if (this.onProducerCallback) {
+        this.log(
+          "info",
+          "Calling onProducerCallback with producerInfo (video)",
+          { producerInfo }
+        );
         this.onProducerCallback(producerInfo);
       }
 
@@ -723,35 +818,63 @@ export class WebRTCService {
   private async getConnectionInfo(
     connectionType: "publisher" | "viewer"
   ): Promise<ConnectionInfo> {
-    // Get temporary access token from auth manager
-    const accessToken = authManager.getAccessToken();
-
-    if (!accessToken) {
-      if (!this.streamId) {
-        throw new Error("Stream ID is required for authentication");
-      }
-      await authManager.authenticate(this.streamId);
+    if (!this.streamId) {
+      this.log("error", "Stream ID not set before calling getConnectionInfo");
+      throw new Error("Stream ID not set");
     }
+    // Determine the target URL based on connection type
+    const endpointPath =
+      connectionType === "publisher"
+        ? `/api/v1/webrtc/publish/${this.streamId}`
+        : `/api/v1/webrtc/view/${this.streamId}`;
 
-    // Use token instead of API key
+    const targetUrl = `${this.apiUrl}${endpointPath}`;
+
     const headers = {
-      Authorization: `Bearer ${accessToken}`,
+      Authorization: `Bearer ${this.authToken}`,
       "Content-Type": "application/json",
     };
 
-    // Server validates token, not API key
-    const response = await fetch(`/api/webrtc/connect`, {
+    // The body is empty for this initial handshake, as per the JS reference
+    const body = JSON.stringify({});
+
+    this.log(
+      "info",
+      `[WebRTCService] Getting connection info from: ${targetUrl} for room: ${this.streamId}, type: ${connectionType}`
+    );
+
+    const response = await fetch(targetUrl, {
       method: "POST",
       headers,
-      credentials: "include",
-      body: JSON.stringify({ connectionType }),
+      body,
     });
 
     if (!response.ok) {
-      throw new Error("Failed to get connection info");
+      const errorBody = await response.text();
+      this.log(
+        "error",
+        `[WebRTCService] Failed to get connection info from backend: ${response.status}`,
+        { errorBody }
+      );
+      throw new Error(
+        `Failed to get connection info from backend: ${response.status} - ${errorBody}`
+      );
     }
 
-    return response.json();
+    const connectionData = await response.json();
+
+    // Expect connectionData to match the ConnectionInfo interface:
+    // { webSocketUrl: string, authToken: string }
+    if (!connectionData.webSocketUrl || !connectionData.authToken) {
+      this.log(
+        "error",
+        "[WebRTCService] Backend response for connection info is missing webSocketUrl or authToken",
+        connectionData
+      );
+      throw new Error("Invalid connection info from backend");
+    }
+
+    return connectionData; // This should be { webSocketUrl: string, authToken: string }
   }
 
   private async connectProtoo(
@@ -886,13 +1009,13 @@ export class WebRTCService {
           rtpParameters,
           appData,
         }: { kind: string; rtpParameters: any; appData: any },
-        callback: (id: string) => void,
+        callback: (args: { id: string }) => void,
         errback: (error: any) => void
       ) => {
         this.log("debug", "Send transport produce event", { kind, appData });
 
         try {
-          const { id } = await this.protooRequest("produce", {
+          const { id: idFromServer } = await this.protooRequest("produce", {
             transportId: this.sendTransport.id,
             kind,
             rtpParameters,
@@ -901,10 +1024,38 @@ export class WebRTCService {
           this.log(
             "info",
             `Protoo response for "produce" request [Kind: ${kind}] - Received ID:`,
-            { idFromServer: id }
+            { idFromServer }
           );
-          callback(id);
+
+          if (
+            appData &&
+            appData.tempId &&
+            this.producerIdPromises.has(appData.tempId)
+          ) {
+            const resolve = this.producerIdPromises.get(appData.tempId);
+            if (resolve) {
+              resolve(idFromServer);
+            }
+            this.producerIdPromises.delete(appData.tempId);
+          }
+
+          callback({ id: idFromServer });
         } catch (error) {
+          if (
+            appData &&
+            appData.tempId &&
+            this.producerIdPromises.has(appData.tempId)
+          ) {
+            const rejectPromise = this.producerIdPromises.get(
+              appData.tempId + "_reject"
+            );
+            if (rejectPromise) {
+            }
+            this.producerIdPromises.delete(appData.tempId);
+            if (this.producerIdPromises.has(appData.tempId + "_reject")) {
+              this.producerIdPromises.delete(appData.tempId + "_reject");
+            }
+          }
           this.log(
             "error",
             `Protoo request "produce" failed for kind ${kind}`,
@@ -1345,6 +1496,8 @@ export class WebRTCService {
       notification,
     });
 
+    let specificNotificationData: any = notification; // Default to passing the whole notification
+
     switch (notification.method) {
       case "producerScore": {
         const { producerId, score } = notification.data;
@@ -1355,6 +1508,28 @@ export class WebRTCService {
         if (producer) {
           producer.score = score;
         }
+        // specificNotificationData remains the original notification to be passed through
+        break;
+      }
+      case "mediasoup-version": {
+        this.log(
+          "info",
+          "Received mediasoup-version notification (server)",
+          notification.data
+        );
+
+        const serverVersion = notification.data.version;
+        const clientVersion = mediasoupClientVersion; // Use imported mediasoup-client version
+        const clientHandler = this.device?.handlerName || "unknown"; // Get handler name from device
+
+        specificNotificationData = {
+          type: "mediasoup-versions",
+          payload: {
+            version: serverVersion,
+            clientVersion: clientVersion,
+            clientHandler: clientHandler,
+          },
+        };
         break;
       }
 
@@ -1365,6 +1540,7 @@ export class WebRTCService {
         if (consumer) {
           consumer.score = score;
         }
+        // specificNotificationData remains the original notification
         break;
       }
 
@@ -1380,6 +1556,7 @@ export class WebRTCService {
           consumer.currentSpatialLayer = spatialLayer;
           consumer.currentTemporalLayer = temporalLayer;
         }
+        // specificNotificationData remains the original notification
         break;
       }
 
@@ -1391,6 +1568,7 @@ export class WebRTCService {
           this.log("info", `Consumer paused: ${consumerId}`);
           consumer.remotelyPaused = true;
         }
+        // specificNotificationData remains the original notification
         break;
       }
 
@@ -1402,6 +1580,7 @@ export class WebRTCService {
           this.log("info", `Consumer resumed: ${consumerId}`);
           consumer.remotelyPaused = false;
         }
+        // specificNotificationData remains the original notification
         break;
       }
 
@@ -1414,6 +1593,7 @@ export class WebRTCService {
           consumer.close();
           this.consumers.delete(consumerId);
         }
+        // specificNotificationData remains the original notification
         break;
       }
 
@@ -1426,31 +1606,38 @@ export class WebRTCService {
           dataConsumer.close();
           this.dataConsumers.delete(dataConsumerId);
         }
+        // specificNotificationData remains the original notification
         break;
       }
 
       case "activeSpeaker": {
         const { peerId } = notification.data;
-
         this.log("debug", `Active speaker: ${peerId}`);
-
-        if (this.onNotificationCallback) {
-          this.onNotificationCallback({
-            type: "activeSpeaker",
-            peerId,
-          });
-        }
+        specificNotificationData = {
+          // Transform for RoomClient
+          type: "activeSpeaker",
+          peerId: peerId,
+        };
         break;
       }
 
       default: {
-        this.log("debug", `Unhandled notification: ${notification.method}`);
+        this.log(
+          "debug",
+          `Unhandled notification method or passing through: ${notification.method}`
+        );
+        // specificNotificationData remains the original notification by default
       }
     }
 
-    // Forward all notifications to the callback
+    // Forward the processed/original notification to the RoomClient callback
+    this.log(
+      "debug",
+      "[WebRTCService] Calling onNotificationCallback with:",
+      specificNotificationData
+    );
     if (this.onNotificationCallback) {
-      this.onNotificationCallback(notification);
+      this.onNotificationCallback(specificNotificationData);
     }
   }
 
@@ -1474,7 +1661,7 @@ export class WebRTCService {
     return "unknown";
   }
 
-  private getPreferredCodec(kind: "audio" | "video"): any {
+  public getPreferredCodec(kind: "audio" | "video"): any {
     if (!this.device) {
       return null;
     }
@@ -1978,5 +2165,36 @@ export class WebRTCService {
       });
       throw error;
     }
+  }
+
+  public getCodecCapabilities(): {
+    vp8: boolean;
+    h264: boolean;
+    vp9: boolean;
+    av1: boolean;
+  } {
+    if (!this.device || !this.device.rtpCapabilities) {
+      return { vp8: false, h264: false, vp9: false, av1: false };
+    }
+
+    const codecs = this.device.rtpCapabilities.codecs || [];
+    return {
+      vp8: codecs.some(
+        (c: RtpCodecCapability) => c.mimeType.toLowerCase() === "video/vp8"
+      ),
+      h264: codecs.some(
+        (c: RtpCodecCapability) => c.mimeType.toLowerCase() === "video/h264"
+      ),
+      vp9: codecs.some(
+        (c: RtpCodecCapability) => c.mimeType.toLowerCase() === "video/vp9"
+      ),
+      av1: codecs.some(
+        (c: RtpCodecCapability) => c.mimeType.toLowerCase() === "video/av1"
+      ),
+    };
+  }
+
+  public getRtpCapabilities() {
+    return this.device?.rtpCapabilities;
   }
 }

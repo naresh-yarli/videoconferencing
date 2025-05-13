@@ -178,7 +178,7 @@ export interface Notification {
 // Authentication configuration
 export interface AuthConfig {
   apiUrl: string;
-  apiKey: string;
+  authToken: string;
 }
 
 // Connection information obtained from the backend

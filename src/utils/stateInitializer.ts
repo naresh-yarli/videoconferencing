@@ -11,7 +11,7 @@ import { localStorageManager } from "@/utils/localStorageManager";
 import Logger from "@/services/Logger";
 import { v4 as uuidv4 } from "uuid";
 import deviceInfo from "@/utils/deviceInfo";
-
+import { Device } from "@/types";
 const logger = new Logger("StateInitializer");
 
 export interface InitialState {
@@ -33,7 +33,7 @@ export function initializeAppState(): InitialState {
   // 2. Get persisted data
   const userCookie = cookiesManager.getUser();
   const devicesCookie = cookiesManager.getDevices();
-  const roomSettings = localStorageManager.getRoomSettings();
+  const roomSettings = null;
 
   // 3. Generate IDs if needed
   const peerId = `user-${uuidv4().substring(0, 8)}`;
@@ -47,8 +47,9 @@ export function initializeAppState(): InitialState {
     state: "new",
     roomId,
     url: roomUrl,
-    faceDetection:
-      urlParams.faceDetection || roomSettings?.faceDetection || false,
+    faceDetection: false,
+    // faceDetection:
+    //   urlParams.faceDetection || roomSettings?.faceDetection || false,
     statsPeerId: null,
     mediasoupVersion: undefined,
     mediasoupClientVersion: undefined,
@@ -56,7 +57,14 @@ export function initializeAppState(): InitialState {
   };
 
   // 6. Initialize me state
-  const device = deviceInfo();
+  const deviceRaw = deviceInfo();
+  const device: Device = {
+    ...deviceRaw,
+    os:
+      typeof deviceRaw.os === "string"
+        ? deviceRaw.os
+        : deviceRaw.os.name || "unknown",
+  };
   const meState: RootState["me"] = {
     id: peerId,
     displayName: urlParams.displayName || userCookie?.displayName || "",
@@ -67,7 +75,8 @@ export function initializeAppState(): InitialState {
     canChangeWebcam: false, // Set after device enumeration
     webcamInProgress: false,
     shareInProgress: false,
-    audioOnly: urlParams.produce === false || roomSettings?.audioOnly || false,
+    audioOnly: false,
+    // audioOnly: urlParams.produce === false || roomSettings?.audioOnly || false,
     audioOnlyInProgress: false,
     restartIceInProgress: false,
     audioMuted: false,
@@ -116,8 +125,8 @@ export function loadPersistedState(): Partial<RootState> {
 
   const userCookie = cookiesManager.getUser();
   const devicesCookie = cookiesManager.getDevices();
-  const apiConfig = localStorageManager.getApiConfig();
-  const roomSettings = localStorageManager.getRoomSettings();
+  const apiConfig = null;
+  const roomSettings = null;
 
   const persistedState: Partial<RootState> = {};
 
@@ -131,16 +140,16 @@ export function loadPersistedState(): Partial<RootState> {
   }
 
   // Apply persisted room settings
-  if (roomSettings) {
-    persistedState.room = {
-      ...persistedState.room,
-      faceDetection: roomSettings.faceDetection || false,
-    } as RootState["room"];
+  // if (roomSettings) {
+  //   persistedState.room = {
+  //     ...(persistedState.room || {}),
+  //     faceDetection: roomSettings.faceDetection || false,
+  //   } as RootState["room"];
 
-    if (persistedState.me) {
-      persistedState.me.audioOnly = roomSettings.audioOnly || false;
-    }
-  }
+  //   if (persistedState.me) {
+  //     persistedState.me.audioOnly = roomSettings.audioOnly || false;
+  //   }
+  // }
 
   logger.debug("Persisted state loaded", persistedState);
   return persistedState;

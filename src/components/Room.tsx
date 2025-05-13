@@ -9,6 +9,7 @@ import Peers from "@/components/Peers";
 import ChatInput from "@/components/ChatInput";
 import Notifications from "@/components/Notifications";
 import Stats from "@/components/Stats";
+import { CodecSelector } from "./CodecSelector";
 
 const Room: React.FC = () => {
   const { roomClient, isConnected } = useRoom();
@@ -25,7 +26,7 @@ const Room: React.FC = () => {
     if (room.url) {
       copyToClipboard(room.url)
         .then(() => {
-          dispatch(
+          dispatch<any>(
             requestActions.notify({
               type: "info",
               text: "Room link copied to clipboard",
@@ -35,7 +36,7 @@ const Room: React.FC = () => {
         })
         .catch((error) => {
           console.error("Failed to copy room link", error);
-          dispatch(
+          dispatch<any>(
             requestActions.notify({
               type: "error",
               text: "Failed to copy room link",
@@ -60,7 +61,23 @@ const Room: React.FC = () => {
         <div className={`icon ${room.state}`} />
         <p className={`text ${room.state}`}>{room.state}</p>
       </div>
+      <div className="sidebar">
+        {/* Add CodecSelector above existing controls */}
+        <CodecSelector />
 
+        <div
+          className={`button hide-videos ${me.audioOnly ? "on" : ""} ${
+            me.audioOnlyInProgress ? "disabled" : ""
+          }`}
+          data-tip="Show/hide participants' video"
+          onClick={() => {
+            if (!roomClient) return;
+            me.audioOnly
+              ? roomClient.disableAudioOnly()
+              : roomClient.enableAudioOnly();
+          }}
+        />
+      </div>
       <div className="info">
         <p className="text">
           <span className="label">server:&nbsp;&nbsp;</span>

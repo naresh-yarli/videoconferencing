@@ -1,188 +1,250 @@
 // src/contexts/RoomContext.tsx
-import React, { createContext, useContext, useEffect, useState } from "react";
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useRef,
+  useEffect,
+  ReactNode,
+} from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { v4 as uuidv4 } from "uuid";
-import { AuthConfig } from "../types";
-import deviceInfo from "../utils/deviceInfo";
+import { RoomClient } from "@/services/RoomClient";
+import {
+  AuthConfig as AppAuthConfig,
+  Device as TypesDevice,
+  RootState as AppRootState,
+  AppDispatch,
+} from "@/types";
+import { roomActions, meActions, requestActions } from "@/redux/store"; // Ensure correct path
+import Logger from "@/services/Logger"; // Import Logger
+import deviceInfo from "@/utils/deviceInfo"; // Import deviceInfo
 
-// Import RoomClient using relative path to avoid circular dependencies
-import { RoomClient } from "../services/RoomClient";
-
-// For this version we'll use direct imports instead of path aliases
-// to prevent any import resolution issues
-import { RootState, AppDispatch } from "@/types";
-import { requestActions } from "@/redux/store";
-
-// Create the room context
-interface RoomContextProps {
+// Define the shape of the context value
+export interface RoomContextValue {
   roomClient: RoomClient | null;
-  isConnecting: boolean;
   isConnected: boolean;
-  connect: (roomId: string, displayName: string) => Promise<void>;
-  disconnect: () => Promise<void>;
-  reconnect: () => Promise<void>;
+  isConnecting: boolean;
   error: Error | null;
+  authConfig: AppAuthConfig | null; // Updated to use AppAuthConfig and allow null
+  connect: (
+    roomId: string,
+    displayName: string,
+    currentAuthConfig: AppAuthConfig // Use AppAuthConfig
+  ) => Promise<void>;
+  disconnect: () => void;
+  updateAuthConfig: (newConfig: AppAuthConfig) => void; // Added for updating App's state
 }
 
-const RoomContext = createContext<RoomContextProps>({
-  roomClient: null,
-  isConnecting: false,
-  isConnected: false,
-  connect: async () => {},
-  disconnect: async () => {},
-  reconnect: async () => {},
-  error: null,
-});
+const RoomContext = createContext<RoomContextValue | undefined>(undefined);
 
-// Create the provider component
-interface RoomProviderProps {
-  children: React.ReactNode;
-  authConfig: AuthConfig;
+export interface RoomProviderProps {
+  children: ReactNode;
+  authConfigParam: AppAuthConfig | null; // Prop from App component
+  onAuthConfigSubmit: (newConfig: AppAuthConfig) => void; // Callback to update App's state
 }
+
+const logger = new Logger("RoomProvider"); // Initialize logger for the provider
 
 export const RoomProvider: React.FC<RoomProviderProps> = ({
   children,
-  authConfig,
+  authConfigParam, // Use the prop
+  onAuthConfigSubmit, // Use the callback
 }) => {
-  const [roomClient, setRoomClient] = useState<RoomClient | null>(null);
-  const [isConnecting, setIsConnecting] = useState(false);
+  const dispatch = useDispatch<AppDispatch>();
+  const roomClientRef = useRef<RoomClient | null>(null);
+  const peerIdRef = useRef<string>("");
+  const storeRef = useRef<any>({ dispatch }); // Minimal store ref for RoomClient
+  const [localAuthConfig, setLocalAuthConfig] = useState<AppAuthConfig | null>(
+    authConfigParam
+  );
+
   const [error, setError] = useState<Error | null>(null);
 
-  const dispatch = useDispatch<AppDispatch>();
-  const roomState = useSelector((state: RootState) => state.room.state);
-  const isConnected = roomState === "connected";
+  // Select relevant parts of the Redux state
+  const roomStateFromRedux = useSelector(
+    (state: AppRootState) => state.room.state
+  );
+  const meIdFromRedux = useSelector((state: AppRootState) => state.me.id);
 
-  // Clean up on unmount
+  // Derive connection states from Redux state
+  const isConnecting = roomStateFromRedux === "connecting";
+  const isConnected = roomStateFromRedux === "connected";
+
   useEffect(() => {
-    return () => {
-      if (roomClient) {
-        roomClient.close();
-      }
-    };
-  }, [roomClient]);
+    setLocalAuthConfig(authConfigParam);
+  }, [authConfigParam]);
 
-  const connect = async (
-    roomId: string,
-    displayName: string
-  ): Promise<void> => {
-    if (isConnecting || isConnected) {
-      return;
-    }
+  useEffect(() => {
+    logger.debug("RoomProvider State update:", {
+      roomStateFromRedux,
+      isConnectedDerived: isConnected,
+      isConnectingDerived: isConnecting,
+      errorLocalState: error ? error.message : null,
+    });
+  }, [roomStateFromRedux, isConnected, isConnecting, error]);
 
-    setIsConnecting(true);
-    setError(null);
+  const updateAuthConfigHandler = useCallback(
+    (newConfig: AppAuthConfig) => {
+      setLocalAuthConfig(newConfig);
+      onAuthConfigSubmit(newConfig); // Call the callback to update App state
+    },
+    [onAuthConfigSubmit]
+  );
 
-    try {
-      // Create a new room client
-      const peerId = `user-${uuidv4().substring(0, 8)}`;
-      const device = deviceInfo();
-
-      // Read 'produce' URL parameter
-      const urlParams = new URLSearchParams(window.location.search);
-      const produceParam = urlParams.get("produce");
-      // Default to true if param is not present or not explicitly "false"
-      const shouldProduce = produceParam !== "false";
-      // Log whether producing is enabled
-      console.log(
-        `RoomContext: Initializing RoomClient with produce=${shouldProduce}`
+  const connect = useCallback(
+    async (
+      roomId: string,
+      displayName: string,
+      currentAuthConfig: AppAuthConfig
+    ) => {
+      // Redact token before logging
+      const loggedAuthConfig = {
+        ...currentAuthConfig,
+        authToken: currentAuthConfig.authToken ? "[REDACTED]" : undefined,
+      };
+      logger.info(
+        `RoomContext: connect called with roomId: ${roomId}, displayName: ${displayName}`,
+        {
+          currentAuthConfig: loggedAuthConfig,
+        }
       );
 
-      const client = new RoomClient({
+      if (
+        !currentAuthConfig ||
+        !currentAuthConfig.apiUrl ||
+        !currentAuthConfig.authToken
+      ) {
+        logger.error(
+          "Connect called without full authConfig (API URL or AuthToken missing)"
+        );
+        setError(new Error("API URL and Auth Token are required to connect."));
+        dispatch(roomActions.setRoomState("closed"));
+        return;
+      }
+
+      // Ensure localAuthConfig is updated if RoomContainer calls connect directly with new auth details
+      // This might happen if RoomContainer's handleAuthSubmit calls connect before App state fully propagates
+      if (
+        localAuthConfig?.apiUrl !== currentAuthConfig.apiUrl ||
+        localAuthConfig?.authToken !== currentAuthConfig.authToken
+      ) {
+        updateAuthConfigHandler(currentAuthConfig);
+      }
+
+      dispatch(roomActions.setRoomState("connecting"));
+      setError(null);
+
+      if (!(window as any).APP_DEVICE) {
+        (window as any).APP_DEVICE = deviceInfo();
+        logger.info("APP_DEVICE initialized in connect", {
+          device: (window as any).APP_DEVICE,
+        });
+        dispatch(
+          meActions.setMediaCapabilities({
+            canSendMic: true, // Assuming default capabilities
+            canSendWebcam: true,
+          })
+        );
+      }
+
+      const peerId = `user-${uuidv4().slice(0, 8)}`;
+      peerIdRef.current = peerId;
+      dispatch(
+        meActions.setMe({
+          id: peerId,
+          displayName,
+          device: (window as any).APP_DEVICE,
+        })
+      );
+
+      const newRoomClient = new RoomClient({
         roomId,
         peerId,
         displayName,
-        device,
-        authConfig,
-        produce: shouldProduce, // Pass the determined produce flag
-        store: {
-          dispatch,
-        },
+        device: (window as any).APP_DEVICE,
+        store: storeRef.current,
+        authConfig: currentAuthConfig,
       });
 
-      // Set up event listeners
-      client.on("notification", (notification) => {
+      roomClientRef.current = newRoomClient;
+
+      // Setup event listeners for RoomClient
+      newRoomClient.on("notification", (notification) => {
         dispatch(
           requestActions.notify({
+            text: notification.text || JSON.stringify(notification),
             type: notification.type || "info",
-            text: notification.text || "Unknown notification",
-            timeout: notification.timeout || 5000,
+            timeout: notification.timeout || 3000,
           })
         );
       });
 
-      client.on("joinFailed", (error) => {
-        setError(
-          error instanceof Error ? error : new Error("Failed to join room")
+      newRoomClient.on("disconnected", (reason?: string) => {
+        logger.warn(
+          `RoomClient 'disconnected' event: ${reason || "No reason provided"}`
         );
-        setIsConnecting(false);
+        dispatch(roomActions.setRoomState("closed"));
+        setError(new Error(`Disconnected: ${reason || "Connection closed"}`));
+        roomClientRef.current = null;
       });
 
-      // Join the room
-      await client.join();
+      newRoomClient.on("error", (err: Error) => {
+        logger.error("RoomClient 'error' event:", err);
+        dispatch(roomActions.setRoomState("closed"));
+        setError(err);
+        roomClientRef.current = null;
+      });
 
-      // Save the client
-      setRoomClient(client);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err : new Error("Failed to connect to room")
-      );
-    } finally {
-      setIsConnecting(false);
+      newRoomClient.on("connected", () => {
+        logger.info("RoomClient 'connected' event received in RoomProvider.");
+        dispatch(roomActions.setRoomState("connected"));
+      });
+
+      try {
+        await newRoomClient.join();
+        roomClientRef.current = newRoomClient;
+      } catch (err: any) {
+        logger.error("Error during connect process:", err);
+        setError(err);
+        dispatch(roomActions.setRoomState("closed"));
+      }
+    },
+    [dispatch, localAuthConfig, updateAuthConfigHandler]
+  );
+
+  const disconnect = useCallback(() => {
+    logger.info("RoomContext: disconnect called");
+    if (roomClientRef.current) {
+      roomClientRef.current.close();
+      roomClientRef.current = null;
     }
-  };
+    dispatch(roomActions.setRoomState("closed"));
+    setError(null);
+  }, [dispatch]);
 
-  const disconnect = async (): Promise<void> => {
-    if (!roomClient) {
-      return;
-    }
-
-    try {
-      await roomClient.leave();
-      setRoomClient(null);
-    } catch (err) {
-      setError(
-        err instanceof Error ? err : new Error("Failed to disconnect from room")
-      );
-    }
-  };
-
-  const reconnect = async (): Promise<void> => {
-    if (!roomClient) {
-      return;
-    }
-
-    try {
-      // Try to reconnect
-      await roomClient.close();
-      await roomClient.join();
-    } catch (err) {
-      setError(
-        err instanceof Error ? err : new Error("Failed to reconnect to room")
-      );
-    }
-  };
-
-  const value: RoomContextProps = {
-    roomClient,
-    isConnecting,
+  const contextValue: RoomContextValue = {
+    roomClient: roomClientRef.current,
     isConnected,
+    isConnecting,
+    error,
+    authConfig: localAuthConfig,
     connect,
     disconnect,
-    reconnect,
-    error,
+    updateAuthConfig: updateAuthConfigHandler,
   };
 
-  return <RoomContext.Provider value={value}>{children}</RoomContext.Provider>;
+  return (
+    <RoomContext.Provider value={contextValue}>{children}</RoomContext.Provider>
+  );
 };
 
-// Create a custom hook to use the room context
-export const useRoom = (): RoomContextProps => {
+export const useRoom = (): RoomContextValue => {
   const context = useContext(RoomContext);
-
   if (!context) {
     throw new Error("useRoom must be used within a RoomProvider");
   }
-
   return context;
 };
 

@@ -5,6 +5,7 @@ import { useRoom } from "@/contexts/RoomContext";
 import { RootState } from "@/types";
 import PeerView from "@/components/PeerView";
 import * as cookiesManager from "@/utils/cookiesManager";
+import { CodecSelector } from "./CodecSelector";
 
 const Me: React.FC = () => {
   const { roomClient } = useRoom();
@@ -83,10 +84,26 @@ const Me: React.FC = () => {
     });
   };
 
+  console.log(
+    "[Me.tsx] Rendering. videoProducer:",
+    videoProducer
+      ? {
+          id: videoProducer.id,
+          type: videoProducer.type,
+          paused: videoProducer.paused,
+          trackExists: !!videoProducer.track,
+        }
+      : null,
+    "videoVisible:",
+    videoVisible
+  );
+
   return (
     <div className="Me" data-tip={tip}>
       {connected && (
         <div className="controls">
+          {/* Add CodecSelector as first control */}
+          <CodecSelector />
           <div
             className={`button mic ${micState}`}
             onClick={() => {

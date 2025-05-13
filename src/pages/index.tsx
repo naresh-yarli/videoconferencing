@@ -6,12 +6,17 @@ import { initFaceDetection } from "../utils/faceDetection";
 
 // Import App component with client-side only rendering
 // This is necessary because mediasoup and WebRTC APIs are not available on the server
-const App = dynamic(() => import("../components/App"), {
-  ssr: false,
-  loading: () => (
-    <div className="loading">Loading video conferencing app...</div>
-  ),
-});
+const App = dynamic(
+  () =>
+    import("../components/App").catch((err) => {
+      console.error("Failed to load App component:", err);
+      return { default: () => <div>Error loading app</div> };
+    }),
+  {
+    ssr: false,
+    loading: () => <div>Loading video conferencing app...</div>,
+  }
+);
 
 export default function HomePage() {
   const [faceDetectionLoaded, setFaceDetectionLoaded] = useState(false);
