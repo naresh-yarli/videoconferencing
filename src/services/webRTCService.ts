@@ -13,6 +13,47 @@ import {
 import { EnhancedEventEmitter } from "./EnhancedEventEmitter";
 import Logger from "./Logger";
 
+// ICE Server Configuration Types
+interface IceServer {
+  urls: string | string[];
+  username?: string;
+  credential?: string;
+}
+
+interface IceServersConfig {
+  iceServers: IceServer[];
+}
+
+// Fallback ICE servers (public STUN servers)
+const FALLBACK_ICE_SERVERS: IceServer[] = [
+  {
+    urls: [
+      "stun:stun.l.google.com:19302",
+      "stun:stun1.l.google.com:19302",
+      "stun:stun2.l.google.com:19302",
+      "stun:stun3.l.google.com:19302",
+      "stun:stun4.l.google.com:19302",
+    ],
+  },
+];
+
+// Validate ICE server configuration
+function validateIceServers(iceServers: IceServer[]): boolean {
+  if (!Array.isArray(iceServers)) return false;
+
+  return iceServers.every((server) => {
+    if (!server.urls) return false;
+    const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+    return urls.every(
+      (url) =>
+        typeof url === "string" &&
+        (url.startsWith("stun:") ||
+          url.startsWith("turn:") ||
+          url.startsWith("turns:"))
+    );
+  });
+}
+
 interface RtpCodecCapability {
   mimeType: string;
   kind: string;
@@ -971,148 +1012,160 @@ export class WebRTCService extends EnhancedEventEmitter {
 
     this.log("debug", "Creating send transport");
 
-    const transportInfo = await this.protooRequest("createWebRtcTransport", {
-      forceTcp: false,
-      producing: true,
-      consuming: false,
-      sctpCapabilities: this.device.sctpCapabilities,
-    });
+    try {
+      const transportInfo = await this.protooRequest("createWebRtcTransport", {
+        forceTcp: false,
+        producing: true,
+        consuming: false,
+        sctpCapabilities: this.device.sctpCapabilities,
+        // Explicitly request ICE server configuration
+        requestIceServers: true,
+      });
 
-    this.sendTransport = this.device.createSendTransport(transportInfo);
-
-    this.sendTransport.on(
-      "connect",
-      async (
-        { dtlsParameters }: { dtlsParameters: any },
-        callback: () => void,
-        errback: (error: Error) => void
-      ) => {
-        this.log("debug", "Send transport connect event");
-
-        try {
-          await this.protooRequest("connectWebRtcTransport", {
-            transportId: this.sendTransport.id,
-            dtlsParameters,
-          });
-          callback();
-        } catch (error) {
-          errback(error as Error);
-        }
+      // Validate and handle ICE servers
+      if (
+        !transportInfo.iceServers ||
+        !validateIceServers(transportInfo.iceServers)
+      ) {
+        this.log(
+          "warn",
+          "Invalid or missing ICE servers in transport info, using fallback"
+        );
+        transportInfo.iceServers = FALLBACK_ICE_SERVERS;
       }
-    );
 
-    this.sendTransport.on(
-      "produce",
-      async (
-        {
-          kind,
-          rtpParameters,
-          appData,
-        }: { kind: string; rtpParameters: any; appData: any },
-        callback: (args: { id: string }) => void,
-        errback: (error: any) => void
-      ) => {
-        this.log("debug", "Send transport produce event", { kind, appData });
+      this.sendTransport = this.device.createSendTransport(transportInfo);
 
-        try {
-          const { id: idFromServer } = await this.protooRequest("produce", {
-            transportId: this.sendTransport.id,
+      // Add ICE connection state handling
+      this.handleIceConnectionStateChange(this.sendTransport, "send");
+
+      this.sendTransport.on(
+        "connect",
+        async (
+          { dtlsParameters }: { dtlsParameters: any },
+          callback: () => void,
+          errback: (error: Error) => void
+        ) => {
+          this.log("debug", "Send transport connect event");
+
+          try {
+            await this.protooRequest("connectWebRtcTransport", {
+              transportId: this.sendTransport.id,
+              dtlsParameters,
+            });
+            callback();
+          } catch (error) {
+            errback(error as Error);
+          }
+        }
+      );
+
+      this.sendTransport.on(
+        "produce",
+        async (
+          {
             kind,
             rtpParameters,
             appData,
-          });
-          this.log(
-            "info",
-            `Protoo response for "produce" request [Kind: ${kind}] - Received ID:`,
-            { idFromServer }
-          );
+          }: { kind: string; rtpParameters: any; appData: any },
+          callback: (args: { id: string }) => void,
+          errback: (error: any) => void
+        ) => {
+          this.log("debug", "Send transport produce event", { kind, appData });
 
-          if (
-            appData &&
-            appData.tempId &&
-            this.producerIdPromises.has(appData.tempId)
-          ) {
-            const resolve = this.producerIdPromises.get(appData.tempId);
-            if (resolve) {
-              resolve(idFromServer);
-            }
-            this.producerIdPromises.delete(appData.tempId);
-          }
-
-          callback({ id: idFromServer });
-        } catch (error) {
-          if (
-            appData &&
-            appData.tempId &&
-            this.producerIdPromises.has(appData.tempId)
-          ) {
-            const rejectPromise = this.producerIdPromises.get(
-              appData.tempId + "_reject"
+          try {
+            const { id: idFromServer } = await this.protooRequest("produce", {
+              transportId: this.sendTransport.id,
+              kind,
+              rtpParameters,
+              appData,
+            });
+            this.log(
+              "info",
+              `Protoo response for "produce" request [Kind: ${kind}] - Received ID:`,
+              { idFromServer }
             );
-            if (rejectPromise) {
+
+            if (
+              appData &&
+              appData.tempId &&
+              this.producerIdPromises.has(appData.tempId)
+            ) {
+              const resolve = this.producerIdPromises.get(appData.tempId);
+              if (resolve) {
+                resolve(idFromServer);
+              }
+              this.producerIdPromises.delete(appData.tempId);
             }
-            this.producerIdPromises.delete(appData.tempId);
-            if (this.producerIdPromises.has(appData.tempId + "_reject")) {
-              this.producerIdPromises.delete(appData.tempId + "_reject");
+
+            callback({ id: idFromServer });
+          } catch (error) {
+            if (
+              appData &&
+              appData.tempId &&
+              this.producerIdPromises.has(appData.tempId)
+            ) {
+              const rejectPromise = this.producerIdPromises.get(
+                appData.tempId + "_reject"
+              );
+              if (rejectPromise) {
+              }
+              this.producerIdPromises.delete(appData.tempId);
+              if (this.producerIdPromises.has(appData.tempId + "_reject")) {
+                this.producerIdPromises.delete(appData.tempId + "_reject");
+              }
             }
+            this.log(
+              "error",
+              `Protoo request "produce" failed for kind ${kind}`,
+              { error: (error as Error).message }
+            );
+            errback(error);
           }
-          this.log(
-            "error",
-            `Protoo request "produce" failed for kind ${kind}`,
-            { error: (error as Error).message }
-          );
-          errback(error);
         }
-      }
-    );
+      );
 
-    this.sendTransport.on(
-      "producedata",
-      async (
-        {
-          sctpStreamParameters,
-          label,
-          protocol,
-          appData,
-        }: {
-          sctpStreamParameters: any;
-          label: string;
-          protocol: string;
-          appData: any;
-        },
-        callback: (id: string) => void,
-        errback: (error: any) => void
-      ) => {
-        this.log("debug", "Send transport producedata event", { label });
-
-        try {
-          const { id } = await this.protooRequest("produceData", {
-            transportId: this.sendTransport.id,
+      this.sendTransport.on(
+        "producedata",
+        async (
+          {
             sctpStreamParameters,
             label,
             protocol,
             appData,
-          });
-          callback(id);
-        } catch (error) {
-          errback(error);
+          }: {
+            sctpStreamParameters: any;
+            label: string;
+            protocol: string;
+            appData: any;
+          },
+          callback: (id: string) => void,
+          errback: (error: any) => void
+        ) => {
+          this.log("debug", "Send transport producedata event", { label });
+
+          try {
+            const { id } = await this.protooRequest("produceData", {
+              transportId: this.sendTransport.id,
+              sctpStreamParameters,
+              label,
+              protocol,
+              appData,
+            });
+            callback(id);
+          } catch (error) {
+            errback(error);
+          }
         }
-      }
-    );
+      );
 
-    this.sendTransport.on(
-      "connectionstatechange",
-      (state: TransportConnectionState) => {
-        this.log("info", `Send transport connection state: ${state}`);
-
-        if (state === "failed" || state === "closed") {
-          this.sendTransport.close();
-          this.sendTransport = null;
-        }
-      }
-    );
-
-    this.log("info", "Send transport created", { id: this.sendTransport.id });
+      this.log("info", "Send transport created", { id: this.sendTransport.id });
+    } catch (error) {
+      this.log("error", "Failed to create send transport", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
   }
 
   private async createRecvTransport(): Promise<void> {
@@ -1122,49 +1175,73 @@ export class WebRTCService extends EnhancedEventEmitter {
 
     this.log("debug", "Creating recv transport");
 
-    const transportInfo = await this.protooRequest("createWebRtcTransport", {
-      forceTcp: false,
-      producing: false,
-      consuming: true,
-      sctpCapabilities: this.device.sctpCapabilities,
-    });
+    try {
+      const transportInfo = await this.protooRequest("createWebRtcTransport", {
+        forceTcp: false,
+        producing: false,
+        consuming: true,
+        sctpCapabilities: this.device.sctpCapabilities,
+        // Explicitly request ICE server configuration
+        requestIceServers: true,
+      });
 
-    this.recvTransport = this.device.createRecvTransport(transportInfo);
-
-    this.recvTransport.on(
-      "connect",
-      async (
-        { dtlsParameters }: { dtlsParameters: any },
-        callback: () => void,
-        errback: (error: Error) => void
-      ) => {
-        this.log("debug", "Recv transport connect event");
-
-        try {
-          await this.protooRequest("connectWebRtcTransport", {
-            transportId: this.recvTransport.id,
-            dtlsParameters,
-          });
-          callback();
-        } catch (error) {
-          errback(error as Error);
-        }
+      // Validate and handle ICE servers
+      if (
+        !transportInfo.iceServers ||
+        !validateIceServers(transportInfo.iceServers)
+      ) {
+        this.log(
+          "warn",
+          "Invalid or missing ICE servers in transport info, using fallback"
+        );
+        transportInfo.iceServers = FALLBACK_ICE_SERVERS;
       }
-    );
 
-    this.recvTransport.on(
-      "connectionstatechange",
-      (state: TransportConnectionState) => {
-        this.log("info", `Recv transport connection state: ${state}`);
+      this.recvTransport = this.device.createRecvTransport(transportInfo);
 
-        if (state === "failed" || state === "closed") {
-          this.recvTransport.close();
-          this.recvTransport = null;
+      // Add ICE connection state handling
+      this.handleIceConnectionStateChange(this.recvTransport, "recv");
+
+      this.recvTransport.on(
+        "connect",
+        async (
+          { dtlsParameters }: { dtlsParameters: any },
+          callback: () => void,
+          errback: (error: Error) => void
+        ) => {
+          this.log("debug", "Recv transport connect event");
+
+          try {
+            await this.protooRequest("connectWebRtcTransport", {
+              transportId: this.recvTransport.id,
+              dtlsParameters,
+            });
+            callback();
+          } catch (error) {
+            errback(error as Error);
+          }
         }
-      }
-    );
+      );
 
-    this.log("info", "Recv transport created", { id: this.recvTransport.id });
+      this.recvTransport.on(
+        "connectionstatechange",
+        (state: TransportConnectionState) => {
+          this.log("info", `Recv transport connection state: ${state}`);
+
+          if (state === "failed" || state === "closed") {
+            this.recvTransport.close();
+            this.recvTransport = null;
+          }
+        }
+      );
+
+      this.log("info", "Recv transport created", { id: this.recvTransport.id });
+    } catch (error) {
+      this.log("error", "Failed to create recv transport", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
   }
 
   private async createConsumer(consumerInfo: any): Promise<Consumer | null> {
@@ -2196,5 +2273,72 @@ export class WebRTCService extends EnhancedEventEmitter {
 
   public getRtpCapabilities() {
     return this.device?.rtpCapabilities;
+  }
+
+  // Add this method to handle ICE connection state changes
+  private handleIceConnectionStateChange(
+    transport: any,
+    type: "send" | "recv"
+  ): void {
+    if (!transport) return;
+
+    transport.on(
+      "connectionstatechange",
+      async (state: TransportConnectionState) => {
+        this.log(
+          "info",
+          `${type} transport connection state changed: ${state}`
+        );
+
+        switch (state) {
+          case "failed":
+            this.log(
+              "warn",
+              `${type} transport connection failed, attempting to restart ICE`
+            );
+            try {
+              await this.restartIce();
+            } catch (error) {
+              this.log("error", `Failed to restart ICE for ${type} transport`, {
+                error: (error as Error).message,
+              });
+            }
+            break;
+
+          case "disconnected":
+            this.log(
+              "warn",
+              `${type} transport disconnected, monitoring for recovery`
+            );
+            // Set a timeout to check if we recover
+            setTimeout(() => {
+              if (transport.connectionState === "disconnected") {
+                this.log(
+                  "warn",
+                  `${type} transport still disconnected, attempting to restart ICE`
+                );
+                this.restartIce().catch((error) => {
+                  this.log(
+                    "error",
+                    `Failed to restart ICE for ${type} transport`,
+                    {
+                      error: (error as Error).message,
+                    }
+                  );
+                });
+              }
+            }, 5000); // Wait 5 seconds before attempting recovery
+            break;
+
+          case "connected":
+            this.log("info", `${type} transport connected successfully`);
+            break;
+
+          case "closed":
+            this.log("info", `${type} transport closed`);
+            break;
+        }
+      }
+    );
   }
 }

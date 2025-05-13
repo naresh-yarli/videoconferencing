@@ -13,6 +13,16 @@ import {
   AuthConfig,
 } from "../types";
 import Logger from "@/services/Logger";
+import {
+  roomActions,
+  meActions,
+  peersActions,
+  producersActions,
+  consumersActions,
+  dataProducersActions,
+  dataConsumersActions,
+  notificationsActions,
+} from "@/redux/store";
 
 export class RoomClient extends EventEmitter {
   private logger: Logger;
@@ -335,10 +345,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "SET_DISPLAY_NAME",
-          payload: { displayName, displayNameSet: true },
-        });
+        this._store.dispatch(
+          meActions.setDisplayName({ displayName, displayNameSet: true })
+        );
       }
 
       // Emit event
@@ -424,10 +433,7 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "REMOVE_PRODUCER",
-        payload: { kind: "audio" },
-      });
+      this._store.dispatch(producersActions.removeProducer({ kind: "audio" }));
     }
 
     // Emit event
@@ -445,15 +451,11 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "SET_PRODUCER_PAUSED",
-        payload: { kind: "audio", paused: true },
-      });
+      this._store.dispatch(
+        producersActions.setProducerPaused({ kind: "audio", paused: true })
+      );
 
-      this._store.dispatch({
-        type: "SET_AUDIO_MUTED",
-        payload: true,
-      });
+      this._store.dispatch(meActions.setAudioMuted(true));
     }
 
     // Emit event
@@ -471,15 +473,11 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "SET_PRODUCER_PAUSED",
-        payload: { kind: "audio", paused: false },
-      });
+      this._store.dispatch(
+        producersActions.setProducerPaused({ kind: "audio", paused: false })
+      );
 
-      this._store.dispatch({
-        type: "SET_AUDIO_MUTED",
-        payload: false,
-      });
+      this._store.dispatch(meActions.setAudioMuted(false));
     }
 
     // Emit event
@@ -585,10 +583,7 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "REMOVE_PRODUCER",
-        payload: { kind: "video" },
-      });
+      this._store.dispatch(producersActions.removeProducer({ kind: "video" }));
     }
 
     // Emit event
@@ -672,10 +667,7 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_PRODUCER",
-          payload: producer,
-        });
+        this._store.dispatch(producersActions.addProducer(producer));
       }
 
       // Add new track to local stream
@@ -801,10 +793,7 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "REMOVE_PRODUCER",
-        payload: { kind: "video" },
-      });
+      this._store.dispatch(producersActions.removeProducer({ kind: "video" }));
     }
 
     // Emit event
@@ -843,15 +832,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "SET_AUDIO_ONLY",
-          payload: true,
-        });
+        this._store.dispatch(meActions.setAudioOnly(true));
 
-        this._store.dispatch({
-          type: "SET_AUDIO_ONLY_IN_PROGRESS",
-          payload: false,
-        });
+        this._store.dispatch(meActions.setAudioOnlyInProgress(false));
       }
 
       // Emit event
@@ -899,15 +882,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "SET_AUDIO_ONLY",
-          payload: false,
-        });
+        this._store.dispatch(meActions.setAudioOnly(false));
 
-        this._store.dispatch({
-          type: "SET_AUDIO_ONLY_IN_PROGRESS",
-          payload: false,
-        });
+        this._store.dispatch(meActions.setAudioOnlyInProgress(false));
       }
 
       // Emit event
@@ -941,10 +918,7 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "SET_AUDIO_MUTED_STATE",
-        payload: true,
-      });
+      this._store.dispatch(meActions.setAudioMuted(true));
     }
 
     // Emit event
@@ -965,10 +939,7 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "SET_AUDIO_MUTED_STATE",
-        payload: false,
-      });
+      this._store.dispatch(meActions.setAudioMuted(false));
     }
 
     // Emit event
@@ -987,10 +958,7 @@ export class RoomClient extends EventEmitter {
 
     // Update store
     if (this._store) {
-      this._store.dispatch({
-        type: "SET_RESTART_ICE_IN_PROGRESS",
-        payload: true,
-      });
+      this._store.dispatch(meActions.setRestartIceInProgress(true));
     }
 
     try {
@@ -1013,10 +981,7 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "SET_RESTART_ICE_IN_PROGRESS",
-          payload: false,
-        });
+        this._store.dispatch(meActions.setRestartIceInProgress(false));
       }
     }
   }
@@ -1040,10 +1005,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_DATA_PRODUCER",
-          payload: dataProducer,
-        });
+        this._store.dispatch(
+          dataProducersActions.addDataProducer(dataProducer)
+        );
       }
 
       // Emit event
@@ -1079,10 +1043,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_DATA_PRODUCER",
-          payload: dataProducer,
-        });
+        this._store.dispatch(
+          dataProducersActions.addDataProducer(dataProducer)
+        );
       }
 
       // Emit event
@@ -1309,10 +1272,7 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_PRODUCER",
-          payload: producer,
-        });
+        this._store.dispatch(producersActions.addProducer(producer));
       }
 
       // Emit event
@@ -1324,10 +1284,7 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_CONSUMER",
-          payload: consumer,
-        });
+        this._store.dispatch(consumersActions.addConsumer(consumer));
       }
 
       // Emit event
@@ -1339,10 +1296,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_DATA_PRODUCER",
-          payload: dataProducer,
-        });
+        this._store.dispatch(
+          dataProducersActions.addDataProducer(dataProducer)
+        );
       }
 
       // Emit event
@@ -1354,10 +1310,9 @@ export class RoomClient extends EventEmitter {
 
       // Update store
       if (this._store) {
-        this._store.dispatch({
-          type: "ADD_DATA_CONSUMER",
-          payload: dataConsumer,
-        });
+        this._store.dispatch(
+          dataConsumersActions.addDataConsumer(dataConsumer)
+        );
       }
 
       // Emit event
@@ -1371,10 +1326,9 @@ export class RoomClient extends EventEmitter {
       if (notification.type === "activeSpeaker") {
         // Update store
         if (this._store) {
-          this._store.dispatch({
-            type: "SET_ROOM_ACTIVE_SPEAKER",
-            payload: notification.peerId,
-          });
+          this._store.dispatch(
+            roomActions.setRoomActiveSpeaker(notification.peerId)
+          );
         }
 
         // Emit event
@@ -1388,14 +1342,13 @@ export class RoomClient extends EventEmitter {
             "Dispatching mediasoup versions to store",
             notification.payload
           );
-          this._store.dispatch({
-            type: "room/setRoomMediasoupInfo",
-            payload: {
+          this._store.dispatch(
+            roomActions.setRoomMediasoupInfo({
               mediasoupVersion: notification.payload.version,
               mediasoupClientVersion: notification.payload.clientVersion,
               mediasoupClientHandler: notification.payload.clientHandler,
-            },
-          });
+            })
+          );
         }
       }
 
@@ -1439,14 +1392,6 @@ export class RoomClient extends EventEmitter {
 
       // Update the local state
       const maxSpatialLayer = spatialLayer;
-
-      // Update the store if available
-      if (this._store && this._store.dispatch) {
-        this._store.dispatch({
-          type: "SET_MAX_SENDING_SPATIAL_LAYER",
-          payload: spatialLayer,
-        });
-      }
 
       // Emit event
       this.emit("maxSendingSpatialLayerChanged", spatialLayer);
@@ -1786,10 +1731,9 @@ export class RoomClient extends EventEmitter {
 
         // Update store with consumer score
         if (this._store) {
-          this._store.dispatch({
-            type: "SET_CONSUMER_SCORE",
-            payload: { consumerId, score },
-          });
+          this._store.dispatch(
+            consumersActions.setConsumerScore({ id: consumerId, score })
+          );
         }
 
         // Emit consumer score event

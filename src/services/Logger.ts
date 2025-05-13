@@ -1,7 +1,7 @@
 // src/services/Logger.ts
 export default class Logger {
   private readonly prefix: string;
-  private static readonly DEBUG = process.env.NODE_ENV === "development";
+  private static readonly DEBUG = false; // Disable all logging
   private static readonly LOG_LEVELS = {
     DEBUG: 0,
     INFO: 1,
@@ -30,84 +30,57 @@ export default class Logger {
   }
 
   debug(message: string, data?: any): void {
-    if (!Logger.DEBUG) return;
-
-    const args = this.formatMessage("DEBUG", message, data);
-    console.log(...args);
+    // Disabled
   }
 
   info(message: string, data?: any): void {
-    const args = this.formatMessage("INFO", message, data);
-    console.info(...args);
+    // Disabled
   }
 
   warn(message: string, data?: any): void {
-    const args = this.formatMessage("WARN", message, data);
-    console.warn(...args);
+    // Disabled
   }
 
   error(message: string, data?: any): void {
-    const args = this.formatMessage("ERROR", message, data);
-    console.error(...args);
+    // Disabled
   }
 
   // Method for WebRTC-specific logging
   webrtc(message: string, data?: any): void {
-    if (!Logger.DEBUG) return;
-
-    const args = this.formatMessage("WEBRTC", message, data);
-    console.log(...args);
+    // Disabled
   }
 
   // Method for Redux-specific logging
   redux(message: string, data?: any): void {
-    if (!Logger.DEBUG) return;
-
-    const args = this.formatMessage("REDUX", message, data);
-    console.log(...args);
+    // Disabled
   }
 
   // Group logging for better organization
   group(label: string): void {
-    if (!Logger.DEBUG) return;
-    console.group(`[${this.prefix}] ${label}`);
+    // Disabled
   }
 
   groupEnd(): void {
-    if (!Logger.DEBUG) return;
-    console.groupEnd();
+    // Disabled
   }
 
   // Table logging for structured data
   table(data: any[], columns?: string[]): void {
-    if (!Logger.DEBUG) return;
-
-    if (columns) {
-      console.table(data, columns);
-    } else {
-      console.table(data);
-    }
+    // Disabled
   }
 
   // Performance logging
   time(label: string): void {
-    if (!Logger.DEBUG) return;
-    console.time(`[${this.prefix}] ${label}`);
+    // Disabled
   }
 
   timeEnd(label: string): void {
-    if (!Logger.DEBUG) return;
-    console.timeEnd(`[${this.prefix}] ${label}`);
+    // Disabled
   }
 
   // Assert for debugging
   assert(condition: boolean, message: string, data?: any): void {
-    if (!Logger.DEBUG) return;
-
-    if (!condition) {
-      const args = this.formatMessage("ASSERT", message, data);
-      console.assert(condition, ...args);
-    }
+    // Disabled
   }
 }
 

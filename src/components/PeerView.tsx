@@ -1,6 +1,14 @@
 // components/PeerView.tsx
 import React, { useState, useEffect, useRef } from "react";
-import classnames from "classnames";
+import styled from "styled-components";
+import { theme } from "../theme";
+import {
+  FaMicrophone,
+  FaMicrophoneSlash,
+  FaVideo,
+  FaVideoSlash,
+  FaDesktop,
+} from "react-icons/fa";
 import EditableInput from "./EditableInput";
 import { Me, Peer } from "../types";
 import hark from "hark";
@@ -10,6 +18,77 @@ import {
   detectFace,
   drawFaceDetection,
 } from "../utils/faceDetection";
+import { useRoom } from "@/contexts/RoomContext";
+
+// Styled-components
+const Tile = styled.div`
+  background: ${theme.colors.surface};
+  border-radius: ${theme.borderRadius};
+  box-shadow: ${theme.shadow};
+  border: 1px solid ${theme.colors.border};
+  min-width: 240px;
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  position: relative;
+  overflow: hidden;
+`;
+
+const Video = styled.video<{ $visible: boolean }>`
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: ${({ $visible }) => ($visible ? "block" : "none")};
+  background: ${theme.colors.placeholder};
+`;
+
+const Placeholder = styled.div`
+  width: 100%;
+  height: 100%;
+  background: ${theme.colors.placeholder};
+  color: ${theme.colors.textSecondary};
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.5rem;
+  position: absolute;
+  top: 0;
+  left: 0;
+`;
+
+const ControlsBar = styled.div`
+  width: 100%;
+  display: flex;
+  justify-content: center;
+  gap: ${theme.spacing(1)};
+  background: rgba(24, 24, 27, 0.85);
+  padding: ${theme.spacing(1)} 0;
+  position: absolute;
+  bottom: 0;
+  left: 0;
+`;
+
+const ControlButton = styled.button<{ $active?: boolean }>`
+  background: ${({ $active }) =>
+    $active ? theme.colors.primary : theme.colors.surface};
+  color: ${({ $active }) =>
+    $active ? theme.colors.text : theme.colors.textSecondary};
+  border: none;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  cursor: pointer;
+  transition: ${theme.transition};
+  &:focus {
+    outline: 2px solid ${theme.colors.accent};
+  }
+`;
 
 interface PeerViewProps {
   isMe?: boolean;
@@ -86,6 +165,7 @@ const PeerView: React.FC<PeerViewProps> = ({
   onRequestKeyFrame,
   onStatsClick,
 }) => {
+  const { roomClient } = useRoom();
   const [audioVolume, setAudioVolume] = useState(0);
   const [showInfo, setShowInfo] = useState(false);
   const [videoResolution, setVideoResolution] = useState<{
@@ -190,7 +270,9 @@ const PeerView: React.FC<PeerViewProps> = ({
     const audioElem = audioElemRef.current;
     const videoElem = videoElemRef.current;
 
-    if (!audioElem || !videoElem) return;
+    if (!audioElem || !videoElem) {
+      return;
+    }
 
     // Handle audio track
     if (newAudioTrack) {
@@ -198,9 +280,7 @@ const PeerView: React.FC<PeerViewProps> = ({
       audioStream.addTrack(newAudioTrack);
       audioElem.srcObject = audioStream;
 
-      audioElem
-        .play()
-        .catch((error) => console.warn("audioElem.play() failed:", error));
+      audioElem.play().catch(() => {});
 
       runHark(audioStream);
     } else {
@@ -209,49 +289,27 @@ const PeerView: React.FC<PeerViewProps> = ({
 
     // Handle video track
     if (newVideoTrack) {
-      console.log(
-        "[PeerView] setTracks - videoTrack:",
-        newVideoTrack
-          ? {
-              id: newVideoTrack.id,
-              kind: newVideoTrack.kind,
-              readyState: newVideoTrack.readyState,
-              enabled: newVideoTrack.enabled,
-              muted: newVideoTrack.muted,
-            }
-          : null
-      );
       const videoStream = new MediaStream();
       videoStream.addTrack(newVideoTrack);
       videoElem.srcObject = videoStream;
 
       videoElem.oncanplay = () => {
-        console.log(
-          "[PeerView] oncanplay FIRED. Setting videoCanPlay to true. videoTrack:",
-          videoTrack ? videoTrack.id : null
-        );
         setVideoCanPlay(true);
       };
 
       videoElem.onplay = () => {
-        console.log(
-          "[PeerView] onplay FIRED. videoTrack:",
-          videoTrack ? videoTrack.id : null
-        );
         setVideoElemPaused(false);
 
         if (audioElem) {
-          audioElem
-            .play()
-            .catch((error) => console.warn("audioElem.play() failed:", error));
+          audioElem.play().catch(() => {});
         }
       };
 
-      videoElem.onpause = () => setVideoElemPaused(true);
+      videoElem.onpause = () => {
+        setVideoElemPaused(true);
+      };
 
-      videoElem
-        .play()
-        .catch((error) => console.warn("videoElem.play() failed:", error));
+      videoElem.play().catch(() => {});
 
       startVideoResolution();
 
@@ -404,488 +462,124 @@ const PeerView: React.FC<PeerViewProps> = ({
       cancelAnimationFrame(faceDetectionRequestAnimationFrame);
       setFaceDetectionRequestAnimationFrame(null);
     }
-
+    // Also clear any setTimeouts if used in animation frame
+    // (If you use setTimeout inside requestAnimationFrame, store its id and clear it here)
     const canvasElem = canvasElemRef.current;
-
     if (canvasElem) {
       canvasElem.width = 0;
       canvasElem.height = 0;
     }
   };
 
-  // Helper for printing producer score
-  const printProducerScore = (id: string, score: any) => {
-    const scores = Array.isArray(score) ? score : [score];
+  // Ensure cleanup on unmount and when faceDetection changes
+  useEffect(() => {
+    return () => {
+      stopFaceDetection();
+    };
+  }, [faceDetection]);
 
-    return (
-      <React.Fragment key={id}>
-        <p>streams:</p>
+  // Derive values from props/state
+  const audioEnabled = !audioMuted;
+  const videoEnabled = videoVisible;
+  const isScreenSharing =
+    videoProducerId && peer && (peer as any).producers
+      ? (peer as any).producers[videoProducerId]?.type === "share"
+      : false;
 
-        {scores
-          .filter((v) => v)
-          .sort((a, b) => {
-            if (a.rid) return a.rid > b.rid ? 1 : -1;
-            else return a.ssrc > b.ssrc ? 1 : -1;
-          })
-          .map((s, idx) => (
-            <p key={idx} className="indent">
-              {s.rid !== undefined
-                ? `rid:${s.rid}, ssrc:${s.ssrc}, score:${s.score}`
-                : `ssrc:${s.ssrc}, score:${s.score}`}
-            </p>
-          ))}
-      </React.Fragment>
-    );
+  // Handlers (now call RoomClient methods)
+  const handleToggleAudio = async () => {
+    if (!roomClient) return;
+    try {
+      if (audioEnabled) {
+        await roomClient.muteMic();
+      } else {
+        await roomClient.unmuteMic();
+      }
+    } catch (err) {
+      console.error("[PeerView.tsx] Failed to toggle audio:", err);
+    }
   };
 
-  // Helper for printing consumer score
-  const printConsumerScore = (id: string, score: any) => {
-    return (
-      <p key={id}>
-        {`score:${score.score}, producerScore:${score.producerScore}, producerScores:[${score.producerScores}]`}
-      </p>
-    );
+  const handleToggleVideo = async () => {
+    if (!roomClient) return;
+    try {
+      if (videoEnabled) {
+        await roomClient.disableWebcam();
+      } else {
+        await roomClient.enableWebcam();
+      }
+    } catch (err) {
+      console.error("[PeerView.tsx] Failed to toggle video:", err);
+    }
+  };
+
+  const handleShareScreen = async () => {
+    if (!roomClient) return;
+    try {
+      if (isScreenSharing) {
+        await roomClient.disableShare();
+      } else {
+        await roomClient.enableShare();
+      }
+    } catch (err) {
+      console.error("[PeerView.tsx] Failed to toggle screen share:", err);
+    }
   };
 
   return (
-    <div className="PeerView" ref={rootElemRef}>
-      {console.log(
-        "[PeerView] Rendering. isMe:",
-        isMe,
-        "videoVisible:",
-        videoVisible,
-        "videoCanPlay:",
-        videoCanPlay,
-        "videoTrack:",
-        videoTrack ? videoTrack.id : null
-      )}
-      <div className="info">
-        <div className="icons">
-          <div
-            className={classnames("icon", "info", { on: showInfo })}
-            onClick={() => setShowInfo(!showInfo)}
-          />
-
-          <div className="icon stats" onClick={() => onStatsClick(peer.id)} />
-        </div>
-
-        <div className={classnames("box", { visible: showInfo })}>
-          {/* Audio info */}
-          {(audioProducerId || audioConsumerId) && (
-            <>
-              <h1>audio</h1>
-
-              {audioProducerId && (
-                <p>
-                  {"id: "}
-                  <span
-                    className="copiable"
-                    data-tip="Copy audio producer id to clipboard"
-                    onClick={() =>
-                      navigator.clipboard.writeText(audioProducerId)
-                    }
-                  >
-                    {audioProducerId}
-                  </span>
-                </p>
-              )}
-
-              {audioConsumerId && (
-                <p>
-                  {"id: "}
-                  <span
-                    className="copiable"
-                    data-tip="Copy audio consumer id to clipboard"
-                    onClick={() =>
-                      navigator.clipboard.writeText(audioConsumerId)
-                    }
-                  >
-                    {audioConsumerId}
-                  </span>
-                </p>
-              )}
-
-              {audioCodec && <p>codec: {audioCodec}</p>}
-
-              {audioProducerId &&
-                audioScore &&
-                printProducerScore(audioProducerId, audioScore)}
-
-              {audioConsumerId &&
-                audioScore &&
-                printConsumerScore(audioConsumerId, audioScore)}
-            </>
-          )}
-
-          {/* Video info */}
-          {(videoProducerId || videoConsumerId) && (
-            <>
-              <h1>video</h1>
-
-              {videoProducerId && (
-                <p>
-                  {"id: "}
-                  <span
-                    className="copiable"
-                    data-tip="Copy video producer id to clipboard"
-                    onClick={() =>
-                      navigator.clipboard.writeText(videoProducerId)
-                    }
-                  >
-                    {videoProducerId}
-                  </span>
-                </p>
-              )}
-
-              {videoConsumerId && (
-                <p>
-                  {"id: "}
-                  <span
-                    className="copiable"
-                    data-tip="Copy video consumer id to clipboard"
-                    onClick={() =>
-                      navigator.clipboard.writeText(videoConsumerId)
-                    }
-                  >
-                    {videoConsumerId}
-                  </span>
-                </p>
-              )}
-
-              {videoCodec && <p>codec: {videoCodec}</p>}
-
-              {videoVisible &&
-                videoResolution.width &&
-                videoResolution.height && (
-                  <p>
-                    resolution: {videoResolution.width}x{videoResolution.height}
-                  </p>
-                )}
-
-              {/* Spatial Layers controls for producers */}
-              {videoVisible &&
-                videoProducerId &&
-                videoRtpParameters?.encodings.length > 1 && (
-                  <p>
-                    max spatial layer:{" "}
-                    {maxSpatialLayer !== null && maxSpatialLayer > -1
-                      ? maxSpatialLayer
-                      : "none"}
-                    <span> </span>
-                    <span
-                      className={classnames({
-                        clickable:
-                          maxSpatialLayer !== null && maxSpatialLayer > -1,
-                      })}
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        if (
-                          maxSpatialLayer === null ||
-                          maxSpatialLayer < 0 ||
-                          !onChangeMaxSendingSpatialLayer
-                        )
-                          return;
-
-                        const newMaxSpatialLayer = maxSpatialLayer - 1;
-
-                        onChangeMaxSendingSpatialLayer(newMaxSpatialLayer);
-                        setMaxSpatialLayer(newMaxSpatialLayer);
-                      }}
-                    >
-                      {"[ down ]"}
-                    </span>
-                    <span> </span>
-                    <span
-                      className={classnames({
-                        clickable:
-                          maxSpatialLayer !== null &&
-                          videoRtpParameters &&
-                          maxSpatialLayer <
-                            videoRtpParameters.encodings.length - 1,
-                      })}
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        if (
-                          maxSpatialLayer === null ||
-                          !videoRtpParameters ||
-                          maxSpatialLayer >=
-                            videoRtpParameters.encodings.length - 1 ||
-                          !onChangeMaxSendingSpatialLayer
-                        )
-                          return;
-
-                        const newMaxSpatialLayer = maxSpatialLayer + 1;
-
-                        onChangeMaxSendingSpatialLayer(newMaxSpatialLayer);
-                        setMaxSpatialLayer(newMaxSpatialLayer);
-                      }}
-                    >
-                      {"[ up ]"}
-                    </span>
-                  </p>
-                )}
-
-              {/* Layer controls for consumers */}
-              {!isMe && videoMultiLayer && (
-                <>
-                  <p>
-                    {`current spatial-temporal layers: ${
-                      consumerCurrentSpatialLayer !== undefined
-                        ? consumerCurrentSpatialLayer
-                        : "none"
-                    } ${
-                      consumerCurrentTemporalLayer !== undefined
-                        ? consumerCurrentTemporalLayer
-                        : "none"
-                    }`}
-                  </p>
-                  <p>
-                    {`preferred spatial-temporal layers: ${
-                      consumerPreferredSpatialLayer !== undefined
-                        ? consumerPreferredSpatialLayer
-                        : "none"
-                    } ${
-                      consumerPreferredTemporalLayer !== undefined
-                        ? consumerPreferredTemporalLayer
-                        : "none"
-                    }`}
-                    <span> </span>
-                    <span
-                      className="clickable"
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        if (
-                          !onChangeVideoPreferredLayers ||
-                          consumerPreferredSpatialLayer === undefined ||
-                          consumerPreferredTemporalLayer === undefined ||
-                          consumerSpatialLayers === undefined ||
-                          consumerTemporalLayers === undefined
-                        )
-                          return;
-
-                        let newPreferredSpatialLayer =
-                          consumerPreferredSpatialLayer;
-                        let newPreferredTemporalLayer;
-
-                        if (consumerPreferredTemporalLayer > 0) {
-                          newPreferredTemporalLayer =
-                            consumerPreferredTemporalLayer - 1;
-                        } else {
-                          if (consumerPreferredSpatialLayer > 0) {
-                            newPreferredSpatialLayer =
-                              consumerPreferredSpatialLayer - 1;
-                          } else {
-                            newPreferredSpatialLayer =
-                              consumerSpatialLayers - 1;
-                          }
-
-                          newPreferredTemporalLayer =
-                            consumerTemporalLayers - 1;
-                        }
-
-                        onChangeVideoPreferredLayers(
-                          newPreferredSpatialLayer,
-                          newPreferredTemporalLayer
-                        );
-                      }}
-                    >
-                      {"[ down ]"}
-                    </span>
-                    <span> </span>
-                    <span
-                      className="clickable"
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        if (
-                          !onChangeVideoPreferredLayers ||
-                          consumerPreferredSpatialLayer === undefined ||
-                          consumerPreferredTemporalLayer === undefined ||
-                          consumerSpatialLayers === undefined ||
-                          consumerTemporalLayers === undefined
-                        )
-                          return;
-
-                        let newPreferredSpatialLayer =
-                          consumerPreferredSpatialLayer;
-                        let newPreferredTemporalLayer;
-
-                        if (
-                          consumerPreferredTemporalLayer <
-                          consumerTemporalLayers - 1
-                        ) {
-                          newPreferredTemporalLayer =
-                            consumerPreferredTemporalLayer + 1;
-                        } else {
-                          if (
-                            consumerPreferredSpatialLayer <
-                            consumerSpatialLayers - 1
-                          ) {
-                            newPreferredSpatialLayer =
-                              consumerPreferredSpatialLayer + 1;
-                          } else {
-                            newPreferredSpatialLayer = 0;
-                          }
-
-                          newPreferredTemporalLayer = 0;
-                        }
-
-                        onChangeVideoPreferredLayers(
-                          newPreferredSpatialLayer,
-                          newPreferredTemporalLayer
-                        );
-                      }}
-                    >
-                      {"[ up ]"}
-                    </span>
-                  </p>
-                </>
-              )}
-
-              {/* Priority controls for consumers */}
-              {!isMe &&
-                videoCodec &&
-                consumerPriority !== undefined &&
-                consumerPriority > 0 && (
-                  <p>
-                    {`priority: ${consumerPriority}`}
-                    <span> </span>
-                    <span
-                      className={classnames({
-                        clickable: consumerPriority > 1,
-                      })}
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        if (!onChangeVideoPriority || consumerPriority <= 1)
-                          return;
-
-                        onChangeVideoPriority(consumerPriority - 1);
-                      }}
-                    >
-                      {"[ down ]"}
-                    </span>
-                    <span> </span>
-                    <span
-                      className={classnames({
-                        clickable: consumerPriority < 255,
-                      })}
-                      onClick={(event) => {
-                        event.stopPropagation();
-
-                        if (!onChangeVideoPriority || consumerPriority >= 255)
-                          return;
-
-                        onChangeVideoPriority(consumerPriority + 1);
-                      }}
-                    >
-                      {"[ up ]"}
-                    </span>
-                  </p>
-                )}
-
-              {/* Keyframe request for consumers */}
-              {!isMe && videoCodec && onRequestKeyFrame && (
-                <p>
-                  <span
-                    className="clickable"
-                    onClick={(event) => {
-                      event.stopPropagation();
-
-                      onRequestKeyFrame();
-                    }}
-                  >
-                    {"[ request keyframe ]"}
-                  </span>
-                </p>
-              )}
-
-              {videoProducerId &&
-                videoScore &&
-                printProducerScore(videoProducerId, videoScore)}
-
-              {videoConsumerId &&
-                videoScore &&
-                printConsumerScore(videoConsumerId, videoScore)}
-            </>
-          )}
-        </div>
-
-        <div className={classnames("peer", { "is-me": isMe })}>
-          {isMe ? (
-            <EditableInput
-              value={peer.displayName || ""}
-              propName="displayName"
-              className="display-name editable"
-              classLoading="loading"
-              classInvalid="invalid"
-              editProps={{
-                maxLength: 20,
-                autoCorrect: "false",
-                spellCheck: "false",
-              }}
-              onChange={({ displayName }) => {
-                if (onChangeDisplayName) {
-                  onChangeDisplayName(displayName);
-                }
-              }}
-            />
-          ) : (
-            <span className="display-name">{peer.displayName}</span>
-          )}
-
-          <div className="row">
-            <span className={classnames("device-icon", peer.device.flag)} />
-            <span className="device-version">
-              {peer.device.name} {peer.device.version || null}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <video
+    <Tile>
+      <Video
         ref={videoElemRef}
-        className={classnames({
-          "is-me": isMe,
-          hidden: !videoVisible || !videoCanPlay,
-          "network-error":
-            videoVisible &&
-            videoMultiLayer &&
-            consumerCurrentSpatialLayer === null,
-        })}
+        $visible={!!videoTrack && videoEnabled}
         autoPlay
         playsInline
         muted
-        controls={false}
       />
-
-      <audio
-        ref={audioElemRef}
-        autoPlay
-        muted={isMe || audioMuted}
-        controls={false}
-      />
-
+      <audio ref={audioElemRef} autoPlay playsInline muted={isMe} />
+      {/* Face detection canvas with accessibility attributes */}
       <canvas
         ref={canvasElemRef}
-        className={classnames("face-detection", { "is-me": isMe })}
+        className="face-detection"
+        role="img"
+        aria-label="Face detection overlay"
+        aria-hidden="true"
+        tabIndex={-1}
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: "100%",
+          pointerEvents: "none",
+        }}
       />
-
-      <div className="volume-container">
-        <div className={classnames("bar", `level${audioVolume}`)} />
-      </div>
-
-      {videoVisible && videoScore && videoScore < 5 && (
-        <div className="spinner-container">
-          <div className="spinner" />
-        </div>
+      {(!videoTrack || !videoEnabled) && (
+        <Placeholder>{peer.displayName?.[0]?.toUpperCase() || "?"}</Placeholder>
       )}
-
-      {videoElemPaused && <div className="video-elem-paused" />}
-    </div>
+      <ControlsBar>
+        <ControlButton
+          onClick={handleToggleAudio}
+          $active={audioEnabled}
+          aria-label={audioEnabled ? "Mute microphone" : "Unmute microphone"}
+        >
+          {audioEnabled ? <FaMicrophone /> : <FaMicrophoneSlash />}
+        </ControlButton>
+        <ControlButton
+          onClick={handleToggleVideo}
+          $active={videoEnabled}
+          aria-label={videoEnabled ? "Turn off camera" : "Turn on camera"}
+        >
+          {videoEnabled ? <FaVideo /> : <FaVideoSlash />}
+        </ControlButton>
+        <ControlButton
+          onClick={handleShareScreen}
+          $active={isScreenSharing}
+          aria-label={isScreenSharing ? "Stop screen sharing" : "Share screen"}
+        >
+          <FaDesktop />
+        </ControlButton>
+      </ControlsBar>
+    </Tile>
   );
 };
 
